@@ -1,18 +1,16 @@
 import type { Point } from './model'
 
-// Laya — a purpose-built local placement judge.
+// Geometric placement judge.
 //
 // The nesting loop enumerates every legal spot for the next copy (checked
 // against real contours first), then hands that finite set of typed outcomes
-// to Laya. Laya scores each one and returns the best, with a confidence and a
-// reason. It is the deterministic, dependency-free stand-in for asking a
-// general judgment model (Jev) which placement to take — same
-// enumerate -> judge -> verify shape, purpose-built for placing objects on a
-// sheet, so it needs no network, no key, and no prompt.
+// to this judge. It scores each one and returns the best, with a confidence
+// and a reason. It is deterministic and dependency-free — no network, no key,
+// no prompt.
 
 export interface Box { minX: number; maxX: number; minY: number; maxY: number }
 
-export interface LayaCandidate {
+export interface Candidate {
   sheet: number
   x: number
   y: number
@@ -22,7 +20,7 @@ export interface LayaCandidate {
   h: number
 }
 
-export interface LayaContext {
+export interface Context {
   sheetW: number
   sheetH: number
   marginTop: number
@@ -32,8 +30,8 @@ export interface LayaContext {
   placed: { box: Box }[]
 }
 
-export interface LayaJudgment {
-  candidate: LayaCandidate
+export interface Judgment {
+  candidate: Candidate
   score: number
   confidence: number
   reason: string
@@ -56,7 +54,7 @@ function mergedLength(intervals: [number, number][]): number {
 
 // How much of the candidate outline lies flush against the sheet edge or an
 // already-placed piece. More shared edge = fewer holes = tighter nest.
-function contactLength(c: LayaCandidate, ctx: LayaContext): number {
+function contactLength(c: Candidate, ctx: Context): number {
   const x1 = c.x + c.w, y1 = c.y + c.h
   const edge =
     (c.y <= ctx.marginBottom + EPS ? c.w : 0) +
@@ -72,7 +70,7 @@ function contactLength(c: LayaCandidate, ctx: LayaContext): number {
 
 // Score one verified-legal placement in [0,1]. 60% packing tightness (shared
 // outline) + 40% bottom-left bias (fill the sheet bottom-up, then left-right).
-export function judge(candidate: LayaCandidate, ctx: LayaContext): LayaJudgment {
+export function judge(candidate: Candidate, ctx: Context): Judgment {
   const perimeter = 2 * (candidate.w + candidate.h)
   const contact = perimeter > 0 ? Math.min(1, contactLength(candidate, ctx) / perimeter) : 0
   const usableH = ctx.sheetH - ctx.marginTop - ctx.marginBottom
@@ -87,7 +85,7 @@ export function judge(candidate: LayaCandidate, ctx: LayaContext): LayaJudgment 
 
 // Pick the best judgment. Deterministic: highest score, ties resolved toward
 // the bottom-left (then the smallest rotation angle) so a run is reproducible.
-export function select(judgments: LayaJudgment[]): LayaJudgment {
+export function select(judgments: Judgment[]): Judgment {
   return judgments.reduce((best, j) => {
     if (j.score > best.score + 1e-12) return j
     if (Math.abs(j.score - best.score) <= 1e-12) {

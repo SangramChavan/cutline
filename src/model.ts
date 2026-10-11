@@ -1,14 +1,9 @@
-import { judge, select, type LayaCandidate, type LayaContext } from './laya'
-
-// Placement decision for the next piece over the enumerated legal candidates.
-// The default resolves geometrically (offline); a caller can substitute the
-// real Laya model (see layaBridge.ts) for the same choice.
-export type Decide = (candidates: LayaCandidate[], ctx: LayaContext) => LayaCandidate | Promise<LayaCandidate>
+import { judge, select, type Candidate, type Context } from './geometry'
 
 export type Shape = 'rectangle' | 'square' | 'rounded' | 'circle' | 'ellipse' | 'polygon' | 'svg'
 export type Point = { x: number; y: number }
 
-// Laya engine budgets: probe at most SCAN_CAP candidate anchors per sheet and
+// Nesting engine budgets: probe at most SCAN_CAP candidate anchors per sheet and
 // judge at most MAX_CANDIDATES legal placements, so scoring stays bounded as a
 // batch grows. ponytail: heuristic ceilings; raise if very dense sheets under-fill.
 const SCAN_CAP = 256
@@ -183,8 +178,7 @@ function segmentDistance(a:Point,b:Point,c:Point,d:Point){
   return Math.min(pointLine(a,c,d),pointLine(b,c,d),pointLine(c,a,b),pointLine(d,a,b))
 }
 
-export async function pack(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity, opts: { decide?: Decide } = {}): Promise<Layout> {
-  const decide = opts.decide ?? ((candidates: LayaCandidate[], ctx: LayaContext) => select(candidates.map(c => judge(c, ctx))).candidate)
+export async function pack(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity): Promise<Layout> {
   const unit = sheet.unit
   const width=toMm(sheet.width,unit), height=toMm(sheet.height,unit)
   const m=[sheet.marginTop,sheet.marginRight,sheet.marginBottom,sheet.marginLeft].map(v=>toMm(v,unit))
@@ -208,9 +202,9 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
     while(lo<hi){ const mid=(lo+hi)>>1, c=arr[mid]!; if(c.y<y||(c.y===y&&c.x<x)) lo=mid+1; else hi=mid }
     arr.splice(lo,0,{x,y})
   }
-  const findSpot=async(si:number,opts:{angle:number;pts:Point[];w:number;h:number}[])=>{
+  const findSpot=(si:number,opts:{angle:number;pts:Point[];w:number;h:number}[])=>{
     const group=sheets[si]!
-    const candidates:LayaCandidate[]=[]
+    const candidates:Candidate[]=[]
     let scanned=0
     scan:
     for(const {pts,w,h,angle} of opts){
@@ -232,10 +226,10 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
       }
     }
     if(!candidates.length) return null
-    // Verify is done above (every candidate is overlap-free); now the decision
-    // layer picks among the legal set instead of the first one found.
-    const ctx:LayaContext={sheetW:width,sheetH:height,marginTop:m[0],marginRight:m[1],marginBottom:m[2],marginLeft:m[3],placed:group.map(o=>placedAt.get(o.id)!)}
-    const best=await decide(candidates,ctx)
+    // Verify is done above (every candidate is overlap-free); the judge picks
+    // the tightest, most bottom-left of the legal set.
+    const ctx:Context={sheetW:width,sheetH:height,marginTop:m[0],marginRight:m[1],marginBottom:m[2],marginLeft:m[3],placed:group.map(o=>placedAt.get(o.id)!)}
+    const best=select(candidates.map(c=>judge(c,ctx))).candidate
     return {x:best.x,y:best.y,angle:best.angle,pts:best.pts,box:{minX:best.x,maxX:best.x+best.w,minY:best.y,maxY:best.y+best.h},w:best.w,h:best.h}
   }
   const place=(si:number,spot:{x:number,y:number;angle:number;pts:Point[];box:Box;w:number;h:number},d:Design,copy:number)=>{
@@ -250,7 +244,7 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
   for(const {d,copy} of items){
     const opts=validAngles(d).map(angle=>{const rp=rotatePoints(pathPoints(d),angle),b=bounds(rp);return{angle,pts:rp.map(p=>({x:p.x-b.minX,y:p.y-b.minY})),w:b.maxX-b.minX,h:b.maxY-b.minY}})
     let spot=null, onSheet=-1
-    for(let si=0;si<sheets.length&&!spot;si++){ ensure(si); const found=await findSpot(si,opts); if(found){spot=found;onSheet=si} }
+    for(let si=0;si<sheets.length&&!spot;si++){ ensure(si); const found=findSpot(si,opts); if(found){spot=found;onSheet=si} }
     if(!spot){
       const smallest=[...opts].sort((a,b)=>a.w*a.h-b.w*b.h)[0]
       if(smallest&&sheets.length<maxSheets&&smallest.w<=width-m[1]-m[3]&&smallest.h<=height-m[0]-m[2]){

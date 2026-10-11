@@ -55,11 +55,11 @@ the design unchanged.
 
 ## Architecture
 
-- `src/laya.ts` — **Laya**, the purpose-built local placement judge. Each copy's
-  legal spots are enumerated and verified against real contours, then Laya scores
-  them (60% shared-edge packing tightness + 40% bottom-left bias), returns a
-  confidence and a reason, and the best is committed. It replaces asking a general
-  judgment model (Jev) which placement to take — deterministic, offline, no key.
+- `src/geometry.ts` — the geometric placement judge. Each copy's legal spots are
+  enumerated and verified against real contours, then the judge scores them
+  (60% shared-edge packing tightness + 40% bottom-left bias), returns a
+  confidence and a reason, and the best is committed. Deterministic, offline,
+  no key.
 - `src/model.ts` — types, mm/unit conversion, contour geometry
   (`pathPoints`, `piecePoints`, `polygonsOverlap`, `validatePolygon`), the `pack()`
   nesting engine (single/multi-sheet aware).
@@ -70,7 +70,7 @@ the design unchanged.
 - `src/nest.worker.ts` — Web Worker wrapper around `pack()` so large batches keep
   the UI responsive and can be cancelled.
 - `src/ui.tsx` — the whole app UI and workflow wiring.
-- `src/model.test.ts`, `src/export.test.ts`, `src/production.test.ts` — acceptance tests.
+- `src/model.test.ts`, `src/geometry.test.ts`, `src/export.test.ts`, `src/production.test.ts` — acceptance tests.
 - `scripts/make-fixtures.mjs` — writes `fixtures/acrylic-batch.zip`.
 
 ## Tests
@@ -104,9 +104,10 @@ cut length/time, costs, duration formatting).
 - **Collision detection is a probe heuristic** (vertices, edge midpoints, centroid
   plus strict segment intersection). It is exact for the convex built-in shapes;
   for concave custom polygons very thin overlaps could in principle be missed.
-- **Nesting quality**, not optimality: Laya judges a bounded set of legal
-  placements per sheet (shared-edge contact + bottom-left bias) instead of taking
-  the first fit; 0/90° or 15°-step rotations per mode. Utilization is reported per sheet.
+- **Nesting quality**, not optimality: the geometric judge evaluates a bounded
+  set of legal placements per sheet (shared-edge contact + bottom-left bias)
+  instead of taking the first fit; 0/90° or 15°-step rotations per mode.
+  Utilization is reported per sheet.
 - **Non-image, non-SVG artwork** (e.g. unknown MIME) is drawn as a text placeholder
   in the PDF and cannot be nested as a contour.
 - Large batches are handled (~500 pieces ≈ 1 s); the candidate list uses an O(n²)

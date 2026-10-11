@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@johnhenry/laya": "^0.3.2",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "react": "^19.2.8",

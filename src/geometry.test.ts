@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { judge, select, type LayaCandidate, type LayaContext } from './laya'
+import { judge, select, type Candidate, type Context } from './geometry'
 import { pack, type Design, type Sheet } from './model'
 
-const ctx: LayaContext = {
+const ctx: Context = {
   sheetW: 100, sheetH: 100, marginTop: 0, marginRight: 0, marginBottom: 0, marginLeft: 0,
   placed: [{ box: { minX: 0, maxX: 20, minY: 0, maxY: 20 } }],
 }
-const cand = (x: number, y: number): LayaCandidate => ({ sheet: 0, x, y, angle: 0, pts: [], w: 20, h: 20 })
+const cand = (x: number, y: number): Candidate => ({ sheet: 0, x, y, angle: 0, pts: [], w: 20, h: 20 })
 
-describe('Laya placement judge', () => {
+describe('Geometric placement judge', () => {
   it('prefers a placement tucked against existing edges over open space', () => {
     const tucked = judge(cand(20, 0), ctx)
     const open = judge(cand(60, 60), ctx)

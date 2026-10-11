@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { buildDxf, buildManifest, buildPdf, buildSvg, makePng } from './export'
-import { fromMm, pack, pathPoints, toMm, validatePolygon, type Decide, type Design, type Layout, type Shape, type Sheet } from './model'
-import { decidePlacement } from './layaBridge'
+import { fromMm, pack, pathPoints, toMm, validatePolygon, type Design, type Layout, type Shape, type Sheet } from './model'
 import { defaultProductionInputs, formatDuration, summarize, type ProductionInputs } from './production'
 import NestWorker from './nest.worker?worker'
 
@@ -20,8 +19,6 @@ function designError(d:Design):string|null{
   if(d.shape==='polygon'||d.shape==='svg')return validatePolygon(pathPoints(d))
   return null
 }
-const DEFAULT_LAYA_MODEL='convaiinnovations/laya'
-function readLayaPrefs(){try{const p=JSON.parse(localStorage.getItem('cutline-laya')||'{}');return{on:!!p.on,model:typeof p.model==='string'&&p.model.trim()?p.model:DEFAULT_LAYA_MODEL}}catch{return{on:false,model:DEFAULT_LAYA_MODEL}}}
 
 export default function App(){
   const [designs,setDesigns]=useState<Design[]>([])
@@ -43,8 +40,6 @@ export default function App(){
   const [prod,setProd]=useState<ProductionInputs>(defaultProductionInputs)
   const [inspect,setInspect]=useState<string|null>(null)
   const [singleSheet,setSingleSheet]=useState(false)
-  const [layaOn,setLayaOn]=useState(readLayaPrefs().on)
-  const [layaModel,setLayaModel]=useState(readLayaPrefs().model)
   const fileRef=useRef<HTMLInputElement>(null)
   const canvasRef=useRef<HTMLDivElement>(null)
   const fileUrls=useRef<string[]>([])
@@ -57,7 +52,6 @@ export default function App(){
 
   useEffect(()=>()=>{fileUrls.current.forEach(URL.revokeObjectURL);nestRef.current?.terminate()},[])
   useEffect(()=>{localStorage.setItem('cutline-sheet-profile',JSON.stringify(sheet))},[sheet])
-  useEffect(()=>{localStorage.setItem('cutline-laya',JSON.stringify({on:layaOn,model:layaModel}))},[layaOn,layaModel])
 
   async function addFiles(files:FileList|File[]){
     const list=Array.from(files);setBusy(`Reading ${list.length} files…`);setMessage('')
@@ -121,12 +115,6 @@ export default function App(){
     const angleOptions=angleMode==='90'?[0,90,180,270]:[0,15,30,45,60,75,90,105,120,135,150,165,180,195,210,225,240,255,270,285,300,315,330,345]
     const maxSheets=singleSheet?1:Infinity
     setHistory(old=>[...old,layout]);setFuture([])
-    if(layaOn){
-      setBusy('Nesting with Laya model judgment…')
-      const decide:Decide=(candidates,ctx)=>decidePlacement(candidates,ctx,{modelId:layaModel,status:setBusy}).then(choice=>choice.candidate)
-      void pack(designs,sheet,angleOptions,maxSheets,{decide}).then(applyLayout)
-      return
-    }
     setBusy('Nesting actual piece outlines…')
     const run=()=>void pack(designs,sheet,angleOptions,maxSheets).then(applyLayout)
     nestRef.current?.terminate()
@@ -214,15 +202,10 @@ export default function App(){
         <div className="margin-label">EDGE MARGINS <span>Top · Right · Bottom · Left</span></div><div className="margins">{(['marginTop','marginRight','marginBottom','marginLeft'] as const).map((key,i)=><label key={key} title={['Top','Right','Bottom','Left'][i]}><span>{['T','R','B','L'][i]}</span><input type="number" min="0" value={sheet[key]} onChange={e=>updateSheet(key,Number(e.target.value))}/></label>)}</div>
         <label className="clearance-row"><span>Minimum clearance <small>0 = true zero-gap</small></span><span className="clearance-input"><input type="number" min="0" step="0.1" value={sheet.clearance} onChange={e=>updateSheet('clearance',Number(e.target.value))}/><i>{sheet.unit}</i></span></label>
         <div className="margin-label">NESTING ROTATION</div><div className="rotation-choice"><button className={angleMode==='90'?'active':''} onClick={()=>setAngleMode('90')}>90° increments</button><button className={angleMode==='free'?'active':''} onClick={()=>setAngleMode('free')}>15° increments</button></div><label className="single-sheet"><input type="checkbox" checked={singleSheet} onChange={e=>setSingleSheet(e.target.checked)}/>Single sheet only</label>
-        <div className="margin-label">NESTING JUDGMENT</div>
-        <label className="single-sheet" title="Ask the real Laya System-1 model to pick each placement; falls back to the built-in geometric judge when the model is unavailable."><input type="checkbox" checked={layaOn} onChange={e=>setLayaOn(e.target.checked)}/>Use Laya model judgment <small style={{color:'#a2a49c'}}>first run downloads it</small></label>
-        {layaOn&&<label className="clearance-row"><span>Model <small>Hugging Face repo or URL</small></span><span className="clearance-input" style={{width:'170px'}}><input type="text" value={layaModel} onChange={e=>setLayaModel(e.target.value)}/></span></label>}
-        <label className="clearance-row" style={{marginTop:8}}><span>Judgment source</span><span>{layaOn?'Laya ↔ geo fallback':'Geometric judge'}</span></label>
-        <small className="note">Heuristic nesting by default; Laya judgment is local ONNX in this browser (weights ~300–800 MB). Polygon approximations use actual contour collision tests.</small>
         <div className="profile-row"><input value={profileName} placeholder="Profile name" onChange={e=>setProfileName(e.target.value)}/><button onClick={saveProfile}>Save profile</button><select aria-label="Load profile" value="" onChange={e=>{const profiles=JSON.parse(localStorage.getItem('cutline-profiles')||'{}');if(profiles[e.target.value]){const p=profiles[e.target.value];setSheet(p.sheet);setBorder(p.border);setBorderColor(p.borderColor);setAngleMode(p.angleMode)}}}><option value="" disabled>Load…</option>{loadProfiles().map(p=><option key={p}>{p}</option>)}</select></div>
       </aside>
       <section className="stage">
-        <div className="stage-head"><div><span className="eyebrow">NESTING PREVIEW · LAYA</span><h2>Sheet composition</h2></div><div className="stage-actions"><button className="icon-button" disabled={!history.length} onClick={undo} title="Undo">↶</button><button className="icon-button" disabled={!future.length} onClick={redo} title="Redo">↷</button><button className="icon-button" onClick={()=>setZoom(z=>Math.min(2.5,z+.15))} title="Zoom in">＋</button><button className="icon-button" onClick={()=>setZoom(z=>Math.max(.5,z-.15))} title="Zoom out">−</button><button className="icon-button fit-button" onClick={()=>setZoom(1)}>Fit</button></div></div>
+        <div className="stage-head"><div><span className="eyebrow">NESTING PREVIEW · GEOMETRIC</span><h2>Sheet composition</h2></div><div className="stage-actions"><button className="icon-button" disabled={!history.length} onClick={undo} title="Undo">↶</button><button className="icon-button" disabled={!future.length} onClick={redo} title="Redo">↷</button><button className="icon-button" onClick={()=>setZoom(z=>Math.min(2.5,z+.15))} title="Zoom in">＋</button><button className="icon-button" onClick={()=>setZoom(z=>Math.max(.5,z-.15))} title="Zoom out">−</button><button className="icon-button fit-button" onClick={()=>setZoom(1)}>Fit</button></div></div>
         <div className="canvas-wrap"><div className="canvas-meta"><span><i className="legend-sheet"/> SHEET BOUNDARY</span><span><i className="legend-cut"/> CUT PATH</span><span><i className="legend-image"/> PRINT ARTWORK</span><span>{sheet.width} × {sheet.height} {sheet.unit}</span></div>
           {activePieces.length?<div className="canvas-viewport"><div className="sheet-canvas" ref={canvasRef} onClick={()=>setInspect(null)} style={{aspectRatio:`${maxW}/${maxH}`,transform:`scale(${zoom})`}}><div className="sheet-margins" style={{top:`${sheet.marginTop/maxH*100}%`,right:`${sheet.marginRight/maxW*100}%`,bottom:`${sheet.marginBottom/maxH*100}%`,left:`${sheet.marginLeft/maxW*100}%`}}/>{activePieces.map(p=>{const d=activeDesigns.get(p.designId)!;return <div key={p.id} className={`piece ${locked.includes(p.id)?'locked':''} ${inspect===p.id?'inspected':''}`} title={`${d.name} · copy ${p.copy} · ${p.width.toFixed(1)}×${p.height.toFixed(1)} mm`} onPointerDown={e=>{if(!locked.includes(p.id))movePiece(p,e)}} onClick={e=>{e.stopPropagation();setInspect(p.id)}} style={{left:`${p.x/maxW*100}%`,top:`${p.y/maxH*100}%`,width:`${p.width/maxW*100}%`,height:`${p.height/maxH*100}%`,borderRadius:d.shape==='circle'?'50%':d.shape==='rounded'?`${d.radius/maxW*100}%`:undefined,transform:`rotate(${p.rotation}deg)`,borderColor:borderColor}}><img src={d.url} alt=""/><span>{p.id.slice(-5)}</span><button className="lock-piece" title="Lock position" onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setLocked(a=>a.includes(p.id)?a.filter(v=>v!==p.id):[...a,p.id])}}>{locked.includes(p.id)?'●':'○'}</button></div>})}</div></div>:<div className="stage-empty"><div className="stage-empty-mark"><span>+</span></div><h3>Your sheet is ready for nesting</h3><p>Configure each piece outline and the material dimensions. Your layout will appear here.</p><button className="primary-button" onClick={recalculate} disabled={!designs.length}>Calculate nesting <span>→</span></button></div>}
         </div>

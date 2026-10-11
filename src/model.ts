@@ -9,6 +9,35 @@ export type Point = { x: number; y: number }
 const SCAN_CAP = 256
 const MAX_CANDIDATES = 8
 
+// A keychain hole is an internal cut path. Coordinates are the hole centre in
+// millimetres, measured from the piece's top-left in its unrotated frame, so a
+// hole stays glued to the artwork through rotation and placement.
+export interface Hole {
+  id: string
+  diameter: number
+  x: number
+  y: number
+}
+
+export type EcLevel = 'L' | 'M' | 'Q' | 'H'
+
+// QR placed on a piece. x/y is the top-left of the QR box (quiet zone included)
+// in design millimetres; sizeMm is the full box edge (square, never stretched).
+export interface QrConfig {
+  enabled: boolean
+  source: 'generated' | 'image'
+  text: string
+  ecLevel: EcLevel
+  sizeMm: number
+  x: number
+  y: number
+  quietModules: number
+  rotation: number
+  imageDataUrl?: string
+  dark?: string
+  light?: string
+}
+
 export interface Design {
   id: string
   name: string
@@ -29,6 +58,10 @@ export interface Design {
   svgPath?: string
   points?: Point[]
   lockRatio?: boolean
+  holes?: Hole[]
+  qr?: QrConfig
+  // Minimum material bridge kept between a hole and the external edge, in mm.
+  bridgeMm?: number
 }
 
 export interface Sheet {
@@ -175,6 +208,70 @@ export function piecePoints(piece: Pick<Piece, 'x' | 'y' | 'rotation' | 'width' 
 export function pointsToPath(points: Point[], precision = 4): string {
   const f = (n: number) => n.toFixed(precision)
   return `M ${points.map(p => `${f(p.x)} ${f(p.y)}`).join(' L ')} Z`
+}
+
+// --- Holes & QR geometry -------------------------------------------------
+
+export function circlePoints(cx: number, cy: number, diameter: number, steps = 48): Point[] {
+  const r = Math.max(0, diameter) / 2
+  return Array.from({ length: steps }, (_, i) => { const a = i * Math.PI * 2 / steps; return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) } })
+}
+
+// Map a point from design-local mm (top-left origin, unrotated) onto the sheet,
+// using the exact same rotate+normalise+translate the cut contour uses. This is
+// what keeps a hole or QR aligned with the artwork after nesting rotates it.
+export function localToSheet(local: Point, piece: Pick<Piece, 'x' | 'y' | 'rotation'>, design: Design): Point {
+  const r = piece.rotation * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r)
+  const raw = pathPoints(design).map(p => ({ x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos }))
+  const minX = Math.min(0, ...raw.map(p => p.x)), minY = Math.min(0, ...raw.map(p => p.y))
+  return { x: local.x * cos - local.y * sin - minX + piece.x, y: local.x * sin + local.y * cos - minY + piece.y }
+}
+
+// The placed hole as a closed contour on the sheet (rotation-independent circle).
+export function holeSheetPolygon(hole: Hole, piece: Pick<Piece, 'x' | 'y' | 'rotation'>, design: Design, steps = 48): Point[] {
+  const c = localToSheet({ x: hole.x, y: hole.y }, piece, design)
+  return circlePoints(c.x, c.y, hole.diameter, steps)
+}
+
+export function pointSegmentDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)))
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+
+export function minDistanceToContour(p: Point, contour: Point[]): number {
+  let min = Infinity
+  for (let i = 0; i < contour.length; i++) min = Math.min(min, pointSegmentDistance(p, contour[i]!, contour[(i + 1) % contour.length]!))
+  return min
+}
+
+export function pointInContour(p: Point, poly: Point[]): boolean { return pointInPolygon(p, poly) }
+
+// Validate a hole against the real cut boundary. bridgeMm is the minimum
+// material left between the hole edge and the nearest external edge.
+export function holeError(hole: Hole, design: Design, bridgeMm = 1): string | null {
+  if (!(hole.diameter > 0)) return 'Hole diameter must be greater than zero.'
+  const contour = pathPoints(design)
+  const centre = { x: hole.x, y: hole.y }
+  if (!pointInContour(centre, contour)) return 'Hole centre is outside the part outline.'
+  const clearance = minDistanceToContour(centre, contour) - hole.diameter / 2
+  if (clearance < bridgeMm - 1e-6) return `Hole is ${clearance.toFixed(2)} mm from the edge; a ${bridgeMm.toFixed(2)} mm material bridge is required.`
+  return null
+}
+
+export function holeClearance(hole: Hole, design: Design): number {
+  return minDistanceToContour({ x: hole.x, y: hole.y }, pathPoints(design)) - hole.diameter / 2
+}
+
+// Preset hole placements, in design-local mm.
+export function holePreset(preset: 'top-centre' | 'top-left' | 'top-right' | 'two-top' | 'centre', design: Pick<Design, 'width' | 'height'>, diameter: number, edgeGap = 4): Hole[] {
+  const r = diameter / 2, g = edgeGap
+  const cx = design.width / 2, cy = g + r
+  if (preset === 'top-left') return [{ id: 'h', diameter, x: g + r, y: cy }]
+  if (preset === 'top-right') return [{ id: 'h', diameter, x: design.width - g - r, y: cy }]
+  if (preset === 'two-top') return [{ id: 'h1', diameter, x: design.width * 0.25, y: cy }, { id: 'h2', diameter, x: design.width * 0.75, y: cy }]
+  if (preset === 'centre') return [{ id: 'h', diameter, x: cx, y: design.height / 2 }]
+  return [{ id: 'h', diameter, x: cx, y: cy }]
 }
 
 function cross(a: Point, b: Point, c: Point) { return (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x) }

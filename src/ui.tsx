@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
-import { buildDxf, buildManifest, buildPdf, buildReport, buildSvg, makePng } from './export'
-import { fitSize, fromMm, marginsFromUsable, packBest, pathPoints, toMm, validatePolygon, validateUsableRect, type Design, type Layout, type Shape, type Sheet } from './model'
-import { defaultProductionInputs, formatDuration, summarize, type ProductionInputs } from './production'
+import { buildCutPdf, buildDxf, buildManifest, buildPdf, buildReport, buildSvg, makePng } from './export'
+import { canvasToPng, renderFinalCanvas } from './compose'
+import PieceEditor, { defaultQr } from './editor'
+import { fitSize, fromMm, marginsFromUsable, packBest, pathPoints, toMm, validatePolygon, validateUsableRect, type Design, type Layout, type QrConfig, type Shape, type Sheet } from './model'
+import { defaultMachineProfile, estimateCutting, formatDuration, suggestedProfiles, type MachineProfile } from './production'
 import NestWorker from './nest.worker?worker'
 
 const extensions = new Set(['png','jpg','jpeg','webp','svg'])
@@ -45,7 +47,10 @@ export default function App(){
   const [bulk,setBulk]=useState({w:'',h:'',q:''})
   const [pxScale,setPxScale]=useState(1)
   const [locked,setLocked]=useState<string[]>([])
-  const [prod,setProd]=useState<ProductionInputs>(defaultProductionInputs)
+  const [editing,setEditing]=useState<string|null>(null)
+  const [bridge,setBridge]=useState(2)
+  const [qrGlobal,setQrGlobal]=useState({text:'',ecLevel:'M' as QrConfig['ecLevel'],sizeMm:20,quietModules:4})
+  const [machine,setMachine]=useState<MachineProfile>(()=>{try{const s=localStorage.getItem('cutline-machine');return s?{...defaultMachineProfile,...JSON.parse(s)}:defaultMachineProfile}catch{return defaultMachineProfile}})
   const [inspect,setInspect]=useState<string|null>(null)
   const [jobName,setJobName]=useState('')
   const [material,setMaterial]=useState('')
@@ -57,16 +62,18 @@ export default function App(){
   const fileUrls=useRef<string[]>([])
   const nestRef=useRef<Worker|null>(null)
   const runRef=useRef(0)
+  const cancelRef=useRef(false)
   const usableError=usableMode?validateUsableRect(sheet,usableRect):null
   const effectiveSheet=usableMode?marginsFromUsable(sheet,usableRect):sheet
   const activePieces=layout.sheets[activeSheet]??[]
   const activeDesigns=useMemo(()=>new Map(designs.map(d=>[d.id,d])),[designs])
-  const summary=useMemo(()=>summarize(designs,layout,effectiveSheet,prod),[designs,layout,effectiveSheet,prod])
+  const estimate=useMemo(()=>estimateCutting(designs,layout,machine),[designs,layout,machine])
   const inspected=activePieces.find(p=>p.id===inspect)??null
   const inspectedDesign=inspected?activeDesigns.get(inspected.designId)??null:null
 
   useEffect(()=>()=>{fileUrls.current.forEach(URL.revokeObjectURL);nestRef.current?.terminate()},[])
   useEffect(()=>{localStorage.setItem('cutline-sheet-profile',JSON.stringify(sheet))},[sheet])
+  useEffect(()=>{localStorage.setItem('cutline-machine',JSON.stringify(machine))},[machine])
 
   async function addFiles(files:FileList|File[]){
     const list=Array.from(files);setBusy(`Reading ${list.length} files…`);setMessage('')
@@ -120,6 +127,8 @@ export default function App(){
     setMessage(`Set ${ids.size} design${ids.size===1?'':'s'} to their image size at ${scale} mm/px${selectedCount?' (selected)':' (all images)'}.`)
   }
   function applyLayout(next:Layout){
+    setLayout(next)
+    setActiveSheet(i=>i<next.sheets.length?i:0)
     setBusy('')
     setMessage(next.unplaced.length?`${next.unplaced.length} piece(s) cannot fit. Adjust dimensions, sheet size, quantity or clearance, or allow more sheets.`:`Nesting complete: ${next.sheets.reduce((n,s)=>n+s.length,0)} exact copies across ${next.sheets.length} sheet(s).`)
   }
@@ -147,23 +156,53 @@ export default function App(){
   function cancelNesting(){runRef.current++;nestRef.current?.terminate();nestRef.current=null;setBusy('');setMessage('Nesting cancelled. The previous layout is unchanged.')}
   function updateSheet(key:keyof Sheet,value:number|string){setSheet(old=>({...old,[key]:value} as Sheet));setLayout({sheets:[],unplaced:[],utilization:[]})}
   function download(name:string,blob:Blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-  async function exportOne(kind:'pdf'|'svg'|'dxf'|'manifest'|'png'|'report'|'zip'){
+  async function exportOne(kind:'printpdf'|'cutpdf'|'svg'|'dxf'|'manifest'|'png'|'report'|'zip'|'finals'){
     if(!layout.sheets.length){setMessage('Nest the job before exporting.');return}
     if(layout.unplaced.length){setMessage('Export blocked: place or remove unplaced pieces first so production files match the requested quantity.');return}
-    setBusy(`Preparing ${kind.toUpperCase()}…`)
-    const opts={border,cut:true,cutColor:borderColor,cutWidthMm:0.25,jobName:jobName.trim(),material:material.trim()}
+    cancelRef.current=false
+    const opts={border,cut:false,cutColor:'#111111',cutWidthMm:0.25,jobName:jobName.trim(),material:material.trim()}
     try{
-      if(kind==='pdf')download('cutline-print.pdf',new Blob([await buildPdf(designs,layout,effectiveSheet,opts)],{type:'application/pdf'}))
-      if(kind==='svg'){const hrefs=await artworkHrefs(designs);buildSvg(designs,layout,effectiveSheet,{...opts,hrefs}).forEach((s,i)=>download(`cut-sheet-${i+1}.svg`,new Blob([s],{type:'image/svg+xml'})))}
-      if(kind==='dxf')buildDxf(designs,layout,effectiveSheet).forEach((s,i)=>download(`cut-sheet-${i+1}.dxf`,new Blob([s],{type:'application/dxf'})))
-      if(kind==='manifest')download('production-manifest.csv',new Blob([buildManifest(designs,layout)],{type:'text/csv'}))
-      if(kind==='report')download('job-report.txt',new Blob([buildReport(designs,layout,effectiveSheet,opts)],{type:'text/plain'}))
-      if(kind==='png')download('layout-preview.png',new Blob([await makePng(designs,activePieces,effectiveSheet)],{type:'image/png'}))
-      if(kind==='zip'){
-        const hrefs=await artworkHrefs(designs)
-        const zip=new JSZip();zip.file('print.pdf',await buildPdf(designs,layout,effectiveSheet,opts));buildSvg(designs,layout,effectiveSheet,{...opts,hrefs}).forEach((s,i)=>zip.file(`cut-sheet-${i+1}.svg`,s));buildDxf(designs,layout,effectiveSheet).forEach((s,i)=>zip.file(`cut-sheet-${i+1}.dxf`,s));zip.file('production-manifest.csv',buildManifest(designs,layout));zip.file('job-report.txt',buildReport(designs,layout,effectiveSheet,opts));zip.file('layout-preview.png',await makePng(designs,activePieces,effectiveSheet));download('cutline-production-files.zip',await zip.generateAsync({type:'blob'}))
-      }
-    }catch(e){setMessage(`Export failed: ${e instanceof Error?e.message:'unknown export error'}`)}finally{setBusy('')}
+      if(kind==='printpdf'){setBusy('Preparing print PDF…');download(`${jobName.trim()||'cutline'}-print.pdf`,new Blob([await buildPdf(designs,layout,effectiveSheet,opts)],{type:'application/pdf'}))}
+      else if(kind==='cutpdf'){setBusy('Preparing cut PDF…');download(`${jobName.trim()||'cutline'}-cut.pdf`,new Blob([await buildCutPdf(designs,layout,effectiveSheet,{...opts,border:false})],{type:'application/pdf'}))}
+      else if(kind==='svg'){const hrefs=await artworkHrefs(designs);setBusy('Preparing SVG…');buildSvg(designs,layout,effectiveSheet,{...opts,hrefs}).forEach((s,i)=>download(`cut-sheet-${i+1}.svg`,new Blob([s],{type:'image/svg+xml'})))}
+      else if(kind==='dxf'){setBusy('Preparing DXF…');buildDxf(designs,layout,effectiveSheet).forEach((s,i)=>download(`cut-sheet-${i+1}.dxf`,new Blob([s],{type:'application/dxf'})))}
+      else if(kind==='manifest'){download('production-manifest.csv',new Blob([buildManifest(designs,layout)],{type:'text/csv'}))}
+      else if(kind==='report'){download('job-report.txt',new Blob([buildReport(designs,layout,effectiveSheet,opts)],{type:'text/plain'}))}
+      else if(kind==='png'){setBusy('Rendering PNG…');download('layout-preview.png',new Blob([await makePng(designs,activePieces,effectiveSheet)],{type:'image/png'}))}
+      else if(kind==='zip'){await exportZip(opts)}
+      else if(kind==='finals'){await exportFinals()}
+    }catch(e){setMessage(e instanceof Error&&e.message==='cancelled'?'Export cancelled. The previous files are unchanged.':`Export failed: ${e instanceof Error?e.message:'unknown export error'}`)}finally{setBusy('')}
+  }
+  async function exportFinals(){
+    const pxPerMm=10
+    const placed=layout.sheets.flat()
+    const zip=new JSZip()
+    for(let i=0;i<placed.length;i++){
+      if(cancelRef.current)throw new Error('cancelled')
+      setBusy(`Rendering final image ${i+1} of ${placed.length}…`)
+      const canvas=await renderFinalCanvas(activeDesigns.get(placed[i]!.designId)!,pxPerMm)
+      zip.file(`product-${String(i+1).padStart(3,'0')}-final.png`,await canvasToPng(canvas))
+      await new Promise(resolve=>setTimeout(resolve,0))
+    }
+    zip.file('manifest.csv',buildManifest(designs,layout))
+    setBusy('Packaging final images…')
+    download('cutline-final-images.zip',await zip.generateAsync({type:'blob'}))
+  }
+  async function exportZip(opts:Parameters<typeof buildPdf>[3]){
+    const hrefs=await artworkHrefs(designs)
+    const zip=new JSZip()
+    zip.file('print.pdf',await buildPdf(designs,layout,effectiveSheet,opts))
+    zip.file('cut.pdf',await buildCutPdf(designs,layout,effectiveSheet,{...opts,border:false}))
+    buildSvg(designs,layout,effectiveSheet,{...opts,hrefs}).forEach((s,i)=>zip.file(`cut-sheet-${i+1}.svg`,s))
+    buildDxf(designs,layout,effectiveSheet).forEach((s,i)=>zip.file(`cut-sheet-${i+1}.dxf`,s))
+    zip.file('production-manifest.csv',buildManifest(designs,layout))
+    zip.file('job-report.txt',buildReport(designs,layout,effectiveSheet,opts))
+    zip.file('layout-preview.png',await makePng(designs,activePieces,effectiveSheet))
+    download('cutline-production-files.zip',await zip.generateAsync({type:'blob'}))
+  }
+  function applyQrToAll(qr:QrConfig){
+    setDesigns(old=>old.map(d=>d.enabled?{...d,qr:{...qr,x:Math.round((d.width-qr.sizeMm)/2),y:Math.round((d.height-qr.sizeMm)/2)}}:d))
+    setMessage('QR code applied to every enabled design.')
   }
   async function importCsv(file:File){
     const text=await file.text(),lines=text.split(/\r?\n/).filter(Boolean),header=(lines.shift()||'').split(',').map(s=>s.replace(/^"|"$/g,'').trim().toLowerCase()),index=(...keys:string[])=>header.findIndex(h=>keys.includes(h))
@@ -211,10 +250,11 @@ export default function App(){
             return <article className={`design-card ${error?'invalid':''}`} key={d.id}>
               <div className="design-main"><input type="checkbox" className="pick" aria-label={`Select ${d.name}`} checked={!!d.selected} onChange={()=>changeDesign(d.id,{selected:!d.selected})}/><div className="thumb">{d.mime==='image/svg+xml'?<img src={d.url} alt=""/>:<img src={d.url} alt=""/>}</div><div className="design-name"><strong title={d.path}>{d.name}</strong><span title={d.path}>{d.path}</span><small>{d.imageWidth} × {d.imageHeight} px{duplicate?(d.hash?' · duplicate file':' · duplicate filename'):''}</small></div><button className={`toggle ${d.enabled?'on':''}`} aria-label="Toggle design" onClick={()=>changeDesign(d.id,{enabled:!d.enabled})}>{d.enabled?'✓':'−'}</button></div>
               <div className="design-fields"><label>W <input aria-label="Piece width" type="number" min="0.1" step="0.1" value={Number(fromMm(d.width,sheet.unit).toFixed(2))} onChange={e=>{const mm=toMm(Number(e.target.value),sheet.unit);changeDesign(d.id,d.lockRatio&&d.imageWidth>0?{width:mm,height:mm*d.imageHeight/d.imageWidth}:{width:mm})}}/><i>{sheet.unit}</i></label><label>H <input aria-label="Piece height" type="number" min="0.1" step="0.1" value={Number(fromMm(d.height,sheet.unit).toFixed(2))} onChange={e=>{const mm=toMm(Number(e.target.value),sheet.unit);changeDesign(d.id,d.lockRatio&&d.imageHeight>0?{height:mm,width:mm*d.imageWidth/d.imageHeight}:{height:mm})}}/><i>{sheet.unit}</i></label><button type="button" className={`toggle ${d.lockRatio?'on':''}`} title={d.lockRatio?'Aspect ratio linked to artwork — click to free':'Link width & height to the artwork aspect ratio'} aria-label="Lock aspect ratio" aria-pressed={!!d.lockRatio} onClick={()=>changeDesign(d.id,{lockRatio:!d.lockRatio})}>⇄</button><label>QTY <input aria-label="Quantity" type="number" min="1" step="1" value={d.quantity} onChange={e=>changeDesign(d.id,{quantity:Math.max(0,Number(e.target.value))})}/></label></div>
-              <div className="design-fields secondary-fields"><label className="shape-select">SHAPE <select aria-label="Cutting shape" value={d.shape} onChange={e=>changeDesign(d.id,{shape:e.target.value as Shape})}>{shapes.map(s=><option value={s} key={s}>{s.toUpperCase()}</option>)}</select></label>{d.shape==='rounded'&&<label>R <input type="number" value={d.radius} onChange={e=>changeDesign(d.id,{radius:Number(e.target.value)})}/><i>{sheet.unit}</i></label>}<label>ROT° <select value={d.rotation} onChange={e=>changeDesign(d.id,{rotation:Number(e.target.value)})}><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label><button className="delete-button" aria-label="Remove design" onClick={()=>setDesigns(old=>old.filter(v=>v.id!==d.id))}>×</button></div>
+              <div className="design-fields secondary-fields"><label className="shape-select">SHAPE <select aria-label="Cutting shape" value={d.shape} onChange={e=>changeDesign(d.id,{shape:e.target.value as Shape})}>{shapes.map(s=><option value={s} key={s}>{s.toUpperCase()}</option>)}</select></label>{d.shape==='rounded'&&<label>R <input type="number" value={d.radius} onChange={e=>changeDesign(d.id,{radius:Number(e.target.value)})}/><i>{sheet.unit}</i></label>}<label>ROT° <select value={d.rotation} onChange={e=>changeDesign(d.id,{rotation:Number(e.target.value)})}><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label><button type="button" className={`toggle ${editing===d.id?'on':''}`} title="Keychain holes & QR editor" aria-label="Edit holes and QR" aria-expanded={editing===d.id} onClick={()=>setEditing(editing===d.id?null:d.id)}>⌾ Holes/QR{(d.holes?.length||d.qr?.enabled)?` · ${d.holes?.length||0}${d.qr?.enabled?' +QR':''}`:''}</button><button className="delete-button" aria-label="Remove design" onClick={()=>setDesigns(old=>old.filter(v=>v.id!==d.id))}>×</button></div>
               {d.shape==='polygon'&&<label className="svg-input">Vertices (x,y in physical units)<textarea placeholder="0,0  40,0  35,30  5,35" value={d.points?.map(p=>`${p.x},${p.y}`).join(' ')||''} onChange={e=>{const points=e.target.value.trim().split(/\s+/).map(pair=>pair.split(',').map(Number)).filter(pair=>pair.length===2&&pair.every(Number.isFinite)).map(([x,y])=>({x:x!,y:y!}));changeDesign(d.id,{points})}}/></label>}
               {d.shape==='svg'&&<label className="svg-input">Closed polygon SVG outline <textarea placeholder="M 0 0 L 40 0 L 35 30 L 0 25 Z" value={d.svgPath||''} onChange={e=>changeDesign(d.id,{svgPath:e.target.value})}/><small>SVG artwork is separate; enter a simple closed polygon path here.</small></label>}
               {error&&<div className="validation">! {error}</div>}
+              {editing===d.id&&<PieceEditor design={d} bridge={bridge} onChange={patch=>changeDesign(d.id,patch)} onApplyQrToAll={applyQrToAll}/>}
             </article>
           })}
         </section>
@@ -239,8 +279,9 @@ export default function App(){
         {message&&<div className="message" role="status">{message}<button onClick={()=>setMessage('')}>×</button></div>}
         {layout.unplaced.length>0&&<div className="unplaced">{layout.unplaced.length} unplaced pieces: {layout.unplaced.slice(0,4).map(p=>p.id).join(', ')}{layout.unplaced.length>4?'…':''}</div>}
         {inspected&&inspectedDesign&&<section className="inspector-panel"><div className="inspector-head"><span className="eyebrow">PIECE INSPECTOR</span><button aria-label="Close inspector" onClick={()=>setInspect(null)}>×</button></div><dl><div><dt>Design</dt><dd>{inspectedDesign.name}</dd></div><div><dt>Source file</dt><dd title={inspectedDesign.path}>{inspectedDesign.path}</dd></div><div><dt>Copy</dt><dd>#{inspected.copy}</dd></div><div><dt>Sheet</dt><dd>{activeSheet+1} of {layout.sheets.length}</dd></div><div><dt>Position</dt><dd>{inspected.x.toFixed(1)}, {inspected.y.toFixed(1)} {sheet.unit}</dd></div><div><dt>Size</dt><dd>{inspected.width.toFixed(1)} × {inspected.height.toFixed(1)} {sheet.unit}</dd></div><div><dt>Rotation</dt><dd>{inspected.rotation}°</dd></div><div><dt>Shape</dt><dd>{inspectedDesign.shape}{locked.includes(inspected.id)?' · locked':''}</dd></div></dl></section>}
-        <section className="production-panel"><div className="export-heading"><div><span className="eyebrow">PRODUCTION SUMMARY</span><h3>Material & time estimate</h3></div></div><div className="prod-grid"><div><span>Pieces placed</span><strong>{summary.placedPieces}</strong></div><div><span>Unplaced</span><strong>{summary.unplacedPieces}</strong></div><div><span>Sheets</span><strong>{summary.sheets}</strong></div><div><span>Avg. utilization</span><strong>{(summary.utilization*100).toFixed(1)}%</strong></div><div><span>Cut length</span><strong>{(summary.cutLengthMm/1000).toFixed(2)} m</strong></div><div><span>Est. cut time</span><strong>{formatDuration(summary.estimatedCutSeconds)}</strong></div><div><span>Waste area</span><strong>{(summary.wasteAreaMm2/1e6).toFixed(3)} m²</strong></div>{summary.totalCost>0&&<div><span>Total cost</span><strong>{summary.totalCost.toFixed(2)}</strong></div>}{summary.totalCost>0&&summary.placedPieces>0&&<div><span>Cost / piece</span><strong>{summary.costPerPiece.toFixed(3)}</strong></div>}</div><div className="prod-inputs"><label>Sheet price<input type="number" min="0" step="0.01" value={prod.sheetPrice} onChange={e=>setProd(p=>({...p,sheetPrice:Number(e.target.value)||0}))}/></label><label>Cut speed mm/s<input type="number" min="1" step="1" value={prod.cutSpeedMmPerSecond} onChange={e=>setProd(p=>({...p,cutSpeedMmPerSecond:Math.max(1,Number(e.target.value)||1)}))}/></label><label>Cut rate / min<input type="number" min="0" step="0.01" value={prod.cutRatePerMinute} onChange={e=>setProd(p=>({...p,cutRatePerMinute:Number(e.target.value)||0}))}/></label><label>Pierce sec/pc<input type="number" min="0" step="0.1" value={prod.pierceSecondsPerPiece} onChange={e=>setProd(p=>({...p,pierceSecondsPerPiece:Number(e.target.value)||0}))}/></label></div><small className="note">Estimates only: cut time = contour length ÷ feed rate plus pierce time. Real machines vary with material and toolpath.</small></section>
-        <section className="export-panel"><div className="export-heading"><div><span className="eyebrow">PRODUCTION OUTPUT</span><h3>Export files</h3></div><div className="export-toggles"><label className="border-toggle"><input type="checkbox" checked={border} onChange={e=>setBorder(e.target.checked)}/>Print border</label><label className="cut-color">Cut line<input type="color" value={borderColor} onChange={e=>setBorderColor(e.target.value)}/></label></div></div><p>Every output shares one geometry source: the true rotated contour used in the preview. The PDF carries a vector cut layer plus DPI-aware artwork; SVG and DXF are one file per sheet.</p><div className="job-row"><label>Job name<input value={jobName} placeholder="e.g. Store signage batch" onChange={e=>setJobName(e.target.value)}/></label><label>Material<input value={material} placeholder="e.g. 3 mm clear acrylic" onChange={e=>setMaterial(e.target.value)}/></label><button type="button" className="quiet-button" onClick={()=>void exportOne('report')}>↧ Job report</button></div><div className="export-buttons"><button onClick={()=>void exportOne('pdf')}>▤ <span>Print + cut PDF</span><small>Artwork + vector cut lines</small></button><button onClick={()=>void exportOne('svg')}>⌁ <span>Cutting SVG</span><small>One file per sheet</small></button><button onClick={()=>void exportOne('dxf')}>⌗ <span>Cutting DXF</span><small>CAD / laser handoff</small></button><button onClick={()=>void exportOne('manifest')}>▦ <span>Manifest CSV</span><small>Piece-level positions</small></button><button onClick={()=>void exportOne('png')}>▧ <span>Preview PNG</span><small>Active sheet proof</small></button><button className="zip-export" onClick={()=>void exportOne('zip')}>↓ <span>Production ZIP</span><small>All outputs, packaged</small></button></div><div className="export-footnote">*PDF artwork is browser-embedded RGB; a color-managed RIP conversion may still be required. Cut contours for circles and curves are polygon approximations. Always verify scale and seam in your cutter software at 100% before production.</div></section>
+        <section className="production-panel"><div className="export-heading"><div><span className="eyebrow">CUTTING ESTIMATE</span><h3>Material & machine time</h3></div><button type="button" className="quiet-button" onClick={()=>setMachine(defaultMachineProfile)}>Reset</button></div><div className="prod-grid"><div><span>Pieces placed</span><strong>{estimate.parts}</strong></div><div><span>Sheets</span><strong>{estimate.sheets}</strong></div><div><span>Contours</span><strong>{estimate.contourCount}</strong></div><div><span>Cut path</span><strong>{((estimate.externalLengthMm+estimate.holeLengthMm)/1000).toFixed(2)} m</strong></div><div><span>Laser-on time</span><strong>{formatDuration(estimate.laserOnSeconds)}</strong></div><div><span>Total time</span><strong>{formatDuration(estimate.totalSeconds)}</strong></div><div><span>Per sheet</span><strong>{formatDuration(estimate.secondsPerSheet)}</strong></div><div><span>Per part</span><strong>{formatDuration(estimate.secondsPerPart)}</strong></div>{estimate.totalCost>0&&<div><span>Total cost</span><strong>{estimate.totalCost.toFixed(2)}</strong></div>}</div><div className="prod-inputs"><label>Material<input value={machine.material} onChange={e=>setMachine(m=>({...m,material:e.target.value}))}/></label><label>Tested preset<select aria-label="Machine preset" value="" onChange={e=>{const p=suggestedProfiles.find(x=>`${x.material} · ${x.thicknessMm}mm`===e.target.value);if(p)setMachine(m=>({...m,material:p.material,thicknessMm:p.thicknessMm,cutSpeedMmPerSecond:p.speedMmPerSecond,passes:p.passes}))}}><option value="" disabled>Starting point…</option>{suggestedProfiles.map(p=><option key={`${p.material}${p.thicknessMm}`} value={`${p.material} · ${p.thicknessMm}mm`}>{p.material} · {p.thicknessMm} mm</option>)}</select></label></div><div className="prod-inputs"><label>Thickness mm<input type="number" min="0" step="0.1" value={machine.thicknessMm} onChange={e=>setMachine(m=>({...m,thicknessMm:Number(e.target.value)||0}))}/></label><label>Power %<input type="number" min="0" max="100" step="1" value={machine.powerPercent} onChange={e=>setMachine(m=>({...m,powerPercent:Number(e.target.value)||0}))}/></label><label>Cut speed mm/s<input type="number" min="0" step="1" value={machine.cutSpeedMmPerSecond} onChange={e=>setMachine(m=>({...m,cutSpeedMmPerSecond:Number(e.target.value)||0}))}/></label><label>Passes<input type="number" min="1" step="1" value={machine.passes} onChange={e=>setMachine(m=>({...m,passes:Math.max(1,Math.floor(Number(e.target.value)||1))}))}/></label><label>Pierce s/contour<input type="number" min="0" step="0.1" value={machine.pierceSeconds} onChange={e=>setMachine(m=>({...m,pierceSeconds:Number(e.target.value)||0}))}/></label><label>Lead-in/out mm<input type="number" min="0" step="0.1" value={machine.leadInMm+machine.leadOutMm} onChange={e=>setMachine(m=>({...m,leadInMm:Number(e.target.value)||0,leadOutMm:0}))}/></label><label>Travel mm/s<input type="number" min="0" step="1" value={machine.travelSpeedMmPerSecond} onChange={e=>setMachine(m=>({...m,travelSpeedMmPerSecond:Number(e.target.value)||0}))}/></label><label>Travel mm/contour<input type="number" min="0" step="0.1" value={machine.travelBetweenMm} onChange={e=>setMachine(m=>({...m,travelBetweenMm:Number(e.target.value)||0}))}/></label><label>Handling s/sheet<input type="number" min="0" step="0.1" value={machine.handlingSecondsPerSheet} onChange={e=>setMachine(m=>({...m,handlingSecondsPerSheet:Number(e.target.value)||0}))}/></label><label>Setup s<input type="number" min="0" step="0.1" value={machine.setupSeconds} onChange={e=>setMachine(m=>({...m,setupSeconds:Number(e.target.value)||0}))}/></label><label>Sheet price<input type="number" min="0" step="0.01" value={machine.sheetPrice} onChange={e=>setMachine(m=>({...m,sheetPrice:Number(e.target.value)||0}))}/></label><label>Cut rate / min<input type="number" min="0" step="0.01" value={machine.cutRatePerMinute} onChange={e=>setMachine(m=>({...m,cutRatePerMinute:Number(e.target.value)||0}))}/></label></div>{estimate.missing.length>0&&<div className="validation">! Enter {estimate.missing.join(', ')} for a complete estimate — the time shown is missing that factor.</div>}<small className="note">Thickness alone never sets a cutting speed: enter the material + thickness + speed your machine was tested at. The presets are rough starting points, not verified parameters. Cutting time = contour path ÷ feed rate + pierce + travel + handling + setup.</small></section>
+        <section className="production-panel"><div className="export-heading"><div><span className="eyebrow">QR CODES</span><h3>Brand & links</h3></div></div><div className="prod-inputs"><label>Default QR text<input value={qrGlobal.text} placeholder="Text or URL to encode" onChange={e=>setQrGlobal(q=>({...q,text:e.target.value}))}/></label><label>Error correction<select value={qrGlobal.ecLevel} onChange={e=>setQrGlobal(q=>({...q,ecLevel:e.target.value as QrConfig['ecLevel']}))}>{['L','M','Q','H'].map(l=><option key={l} value={l}>{l}</option>)}</select></label><label>Size mm<input type="number" min="4" step="0.5" value={qrGlobal.sizeMm} onChange={e=>setQrGlobal(q=>({...q,sizeMm:Math.max(4,Number(e.target.value)||4)}))}/></label><label>Quiet modules<input type="number" min="0" step="1" value={qrGlobal.quietModules} onChange={e=>setQrGlobal(q=>({...q,quietModules:Math.max(0,Math.floor(Number(e.target.value)||0))}))}/></label><label>Hole edge bridge mm<input type="number" min="0" step="0.5" value={bridge} onChange={e=>setBridge(Math.max(0,Number(e.target.value)||0))}/></label></div><div className="bulk-match"><button onClick={()=>applyQrToAll(defaultQr({width:1,height:1},{text:qrGlobal.text,ecLevel:qrGlobal.ecLevel,sizeMm:qrGlobal.sizeMm,quietModules:qrGlobal.quietModules}))}>Add same QR to all enabled designs</button><button className="quiet-button" onClick={()=>setDesigns(old=>old.map(d=>({...d,qr:undefined})))}>Remove all QRs</button></div><small className="note">QRs are generated locally and stored per design; open a design's Holes/QR editor to position it. Apply-to-all overwrites each design's QR, centred.</small></section>
+        <section className="export-panel"><div className="export-heading"><div><span className="eyebrow">PRODUCTION OUTPUT</span><h3>Export files</h3></div><div className="export-toggles"><label className="border-toggle"><input type="checkbox" checked={border} onChange={e=>setBorder(e.target.checked)}/>Sheet border on print</label></div></div><p>Print and cut are separate outputs from one geometry source: the print PDF carries artwork and QR only (never a cut line), while the cut PDF, SVG and DXF carry the true rotated contour plus keychain holes.</p><div className="job-row"><label>Job name<input value={jobName} placeholder="e.g. Store signage batch" onChange={e=>setJobName(e.target.value)}/></label><label>Material<input value={material} placeholder="e.g. 3 mm clear acrylic" onChange={e=>setMaterial(e.target.value)}/></label><button type="button" className="quiet-button" onClick={()=>void exportOne('report')}>↧ Job report</button></div><div className="export-buttons"><button onClick={()=>void exportOne('printpdf')}>▤ <span>Print PDF</span><small>Artwork + QR, no cut lines</small></button><button onClick={()=>void exportOne('cutpdf')}>✂ <span>Cut PDF</span><small>Black vector outlines + holes</small></button><button onClick={()=>void exportOne('svg')}>⌁ <span>Cutting SVG</span><small>One file per sheet</small></button><button onClick={()=>void exportOne('dxf')}>⌗ <span>Cutting DXF</span><small>CUT + HOLES layers</small></button><button onClick={()=>void exportOne('manifest')}>▦ <span>Manifest CSV</span><small>Piece-level positions</small></button><button onClick={()=>void exportOne('png')}>▧ <span>Preview PNG</span><small>Active sheet proof</small></button><button className="zip-export" onClick={()=>void exportOne('finals')}>⬒ <span>Final images ZIP</span><small>One PNG per finished piece</small></button><button className="zip-export" onClick={()=>void exportOne('zip')}>↓ <span>Production ZIP</span><small>All outputs, packaged</small></button></div><div className="export-footnote">*PDF artwork is browser-embedded RGB; a color-managed RIP conversion may still be required. Cut contours for circles and curves are polygon approximations. Always verify scale and seam in your cutter software at 100% before production.</div></section>
         <footer>BUILT FOR THE DETAILS THAT MATTER <span>•</span> LOCAL-FIRST PRODUCTION</footer>
       </section>
     </div>

@@ -50,3 +50,24 @@
 .job-row label{flex:1;min-width:150px;display:flex;flex-direction:column;gap:4px;font:9px var(--mono);letter-spacing:.1em;color:#8b8d84}
 .job-row input{height:32px;border:1px solid var(--line);border-radius:6px;background:#fffefa;padding:0 9px;font-size:11px}
 .job-row .quiet-button{height:32px;align-self:flex-end}
+.piece-editor{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;display:flex;gap:12px;flex-wrap:wrap}
+.editor-preview{position:relative;flex:none;background:#efece5;border:1px solid var(--line);border-radius:7px;overflow:hidden;cursor:crosshair}
+.editor-preview img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
+.hole-marker{position:absolute;transform:translate(-50%,-50%);border:1px solid #b74d43;background:#fff0eab0;border-radius:50%;cursor:grab;touch-action:none}
+.hole-marker.active{border-width:2px;background:#ffd9cdb0}
+.qr-marker{position:absolute;border:1px dashed #4b6d54;cursor:grab;touch-action:none}
+.qr-marker svg{display:block}
+.editor-controls{flex:1;min-width:220px;display:flex;flex-direction:column;gap:10px}
+.editor-block{border:1px solid var(--line);border-radius:7px;padding:8px;background:#fffefa}
+.editor-block-head{display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:6px}
+.editor-block-head span{font:9px var(--mono);color:#999}
+.editor-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:9px;color:#82867d}
+.hole-row{display:flex;align-items:center;gap:5px;margin-top:5px;font:9px var(--mono);color:#777}
+.hole-row.invalid{color:#b74d43}
+.hole-row input{width:46px;height:22px;border:1px solid #e8e5df;border-radius:4px;padding:2px 4px;font:9px var(--mono)}
+.mini{display:flex;align-items:center;gap:3px}
+.mini input{width:46px}
+.align-row button{width:24px;height:24px;border:1px solid #e2dfd8;background:#faf9f6;border-radius:5px;color:#666a64}
+.editor-field{display:block;font-size:9px;color:#82867d}
+.editor-field textarea{display:block;width:100%;height:38px;resize:vertical;margin-top:4px;border:1px solid #e8e5df;border-radius:5px;padding:5px;font:10px var(--mono);background:#fffefa}
+.hint{font:9px var(--mono);color:#a0a198}

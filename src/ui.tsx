@@ -47,7 +47,7 @@ export default function App(){
   const [history,setHistory]=useState<Layout[]>([])
   const [future,setFuture]=useState<Layout[]>([])
   const [profileName,setProfileName]=useState('')
-  const [bulk,setBulk]=useState({w:'',h:'',q:''})
+  const [bulk,setBulk]=useState({w:'',h:'',q:'',s:'',r:''})
   const [pxScale,setPxScale]=useState(1)
   const [locked,setLocked]=useState<string[]>([])
   const [editing,setEditing]=useState<string|null>(null)
@@ -130,9 +130,16 @@ export default function App(){
     if(bulk.w!=='')patch.width=toMm(Number(bulk.w),sheet.unit)
     if(bulk.h!=='')patch.height=toMm(Number(bulk.h),sheet.unit)
     if(bulk.q!=='')patch.quantity=Math.max(0,Math.floor(Number(bulk.q)))
-    if(!Object.keys(patch).length){setMessage('Enter a width, height or quantity to apply to the selection.');return}
+    if(bulk.s!=='')patch.shape=bulk.s as Shape
+    if(bulk.r!=='')patch.radius=toMm(Number(bulk.r),sheet.unit)
+    if(!Object.keys(patch).length){setMessage('Enter a size, quantity, shape or radius to apply to the selection.');return}
     const ids=new Set(bulkTargets.map(d=>d.id))
-    setDesigns(old=>old.map(d=>ids.has(d.id)?{...d,...patch}:d))
+    setDesigns(old=>old.map(d=>{
+      if(!ids.has(d.id))return d
+      const next={...d,...patch}
+      if(patch.radius!==undefined)next.radius=Math.max(0,Math.min(next.radius,Math.min(next.width,next.height)/2))
+      return next
+    }))
     setMessage(`Applied to ${ids.size} design${ids.size===1?'':'s'}${selectedCount?' (selected)':' (all images)'}.`)
   }
   function matchImageSize(){
@@ -299,7 +306,7 @@ export default function App(){
         <div className="quick-row"><label className="file-button">＋ Add artwork<input type="file" multiple accept=".png,.jpg,.jpeg,.webp,.svg" onChange={e=>e.target.files&&void addFiles(e.target.files)}/></label><label className="file-button secondary">↥ Import CSV<input type="file" accept=".csv" onChange={e=>e.target.files?.[0]&&void stageCsv(e.target.files[0])}/></label></div>
         {designs.length>0&&<div className="bulk-bar">
           <label className="select-all"><input type="checkbox" checked={allSelected} onChange={e=>setDesigns(old=>old.map(d=>({...d,selected:e.target.checked})))}/><b>{selectedCount?`${selectedCount} selected`:'Select all'}</b></label>
-          <div className="bulk-fields"><span className="bulk-scope">{selectedCount?'→ SELECTED':'→ ALL'}</span><label>W<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.w} onChange={e=>setBulk(b=>({...b,w:e.target.value}))}/></label><label>H<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.h} onChange={e=>setBulk(b=>({...b,h:e.target.value}))}/></label><label>QTY<input type="number" min="1" step="1" placeholder="—" value={bulk.q} onChange={e=>setBulk(b=>({...b,q:e.target.value}))}/></label><button className="bulk-apply" onClick={applyBulk}>Apply</button></div>
+          <div className="bulk-fields"><span className="bulk-scope">{selectedCount?'→ SELECTED':'→ ALL'}</span><label>W<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.w} onChange={e=>setBulk(b=>({...b,w:e.target.value}))}/></label><label>H<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.h} onChange={e=>setBulk(b=>({...b,h:e.target.value}))}/></label><label>QTY<input type="number" min="1" step="1" placeholder="—" value={bulk.q} onChange={e=>setBulk(b=>({...b,q:e.target.value}))}/></label><label>SHAPE<select value={bulk.s} onChange={e=>setBulk(b=>({...b,s:e.target.value}))}><option value="">—</option>{shapes.map(x=><option value={x} key={x}>{x.toUpperCase()}</option>)}</select></label><label>R<input type="number" min="0" step="0.5" placeholder="—" value={bulk.r} onChange={e=>setBulk(b=>({...b,r:e.target.value}))}/></label><button className="bulk-apply" onClick={applyBulk}>Apply</button></div>
           <div className="bulk-match"><span>px→mm</span><input type="number" min="0.01" step="0.1" value={pxScale} onChange={e=>setPxScale(Number(e.target.value)||1)}/><button onClick={matchImageSize}>Size = image</button></div>
         </div>}
         {designs.length>0&&<div className="list-toolbar"><input className="list-search" type="search" placeholder="Search filenames…" aria-label="Search artwork" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Filter images" value={listFilter} onChange={e=>setListFilter(e.target.value as typeof listFilter)}><option value="all">All images</option><option value="with">Has QR</option><option value="without">No QR</option><option value="invalid">Needs attention</option><option value="selected">Selected</option></select><button type="button" className="quiet-button" onClick={()=>setDesigns(old=>old.map(d=>({...d,selected:false})))}>Deselect all</button></div>}

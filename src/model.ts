@@ -28,6 +28,7 @@ export interface Design {
   hash?: string
   svgPath?: string
   points?: Point[]
+  lockRatio?: boolean
 }
 
 export interface Sheet {
@@ -62,6 +63,49 @@ export interface Layout {
 
 export const toMm = (n: number, unit: Sheet['unit']) => n * (unit === 'cm' ? 10 : unit === 'in' ? 25.4 : 1)
 export const fromMm = (n: number, unit: Sheet['unit']) => n / (unit === 'cm' ? 10 : unit === 'in' ? 25.4 : 1)
+
+// Default physical size for a freshly imported artwork: preserve its aspect
+// ratio, fitted so the longest edge is maxEdge mm.
+export function fitSize(imageWidth: number, imageHeight: number, maxEdge = 50): { width: number; height: number } {
+  if (!(imageWidth > 0) || !(imageHeight > 0)) return { width: maxEdge, height: maxEdge }
+  const scale = maxEdge / Math.max(imageWidth, imageHeight)
+  return { width: imageWidth * scale, height: imageHeight * scale }
+}
+
+// Shoelace area of a closed contour (absolute, so winding order is irrelevant).
+export function polygonArea(points: Point[]): number {
+  let a = 0
+  for (let i = 0; i < points.length; i++) { const p = points[i]!, q = points[(i + 1) % points.length]!; a += p.x * q.y - q.x * p.y }
+  return Math.abs(a) / 2
+}
+
+// The usable rectangle implied by the four edge margins, in mm.
+export function usableBounds(sheet: Sheet) {
+  const ml = toMm(sheet.marginLeft, sheet.unit), mr = toMm(sheet.marginRight, sheet.unit), mt = toMm(sheet.marginTop, sheet.unit), mb = toMm(sheet.marginBottom, sheet.unit)
+  const width = Math.max(0, toMm(sheet.width, sheet.unit) - ml - mr), height = Math.max(0, toMm(sheet.height, sheet.unit) - mt - mb)
+  return { x: ml, y: mb, width, height, area: width * height }
+}
+
+export interface UsableRect { x: number; y: number; width: number; height: number }
+
+// A custom usable rectangle (in sheet units) is exactly the margin rectangle
+// the nesting engine already supports, expressed as X / Y / width / height.
+export function marginsFromUsable(sheet: Sheet, rect: UsableRect): Sheet {
+  return {
+    ...sheet,
+    marginLeft: rect.x,
+    marginBottom: rect.y,
+    marginRight: Math.max(0, sheet.width - rect.x - rect.width),
+    marginTop: Math.max(0, sheet.height - rect.y - rect.height),
+  }
+}
+
+export function validateUsableRect(sheet: Sheet, rect: UsableRect): string | null {
+  if (!(rect.width > 0) || !(rect.height > 0)) return 'Usable area needs a positive width and height.'
+  if (rect.x < 0 || rect.y < 0) return 'Usable area X and Y must be zero or greater.'
+  if (rect.x + rect.width > sheet.width + 1e-6 || rect.y + rect.height > sheet.height + 1e-6) return 'Usable area extends past the sheet edge. Reduce X, Y, width or height.'
+  return null
+}
 
 export function shapePath(d: Pick<Design, 'shape' | 'width' | 'height' | 'radius' | 'points' | 'svgPath'>): string {
   const { width: w, height: h } = d
@@ -178,18 +222,22 @@ function segmentDistance(a:Point,b:Point,c:Point,d:Point){
   return Math.min(pointLine(a,c,d),pointLine(b,c,d),pointLine(c,a,b),pointLine(d,a,b))
 }
 
-export async function pack(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity): Promise<Layout> {
+export async function pack(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity, compare?: (a: Design, b: Design) => number): Promise<Layout> {
   const unit = sheet.unit
   const width=toMm(sheet.width,unit), height=toMm(sheet.height,unit)
   const m=[sheet.marginTop,sheet.marginRight,sheet.marginBottom,sheet.marginLeft].map(v=>toMm(v,unit))
+  const usableW=Math.max(0,width-m[3]-m[1]), usableH=Math.max(0,height-m[0]-m[2]), usableArea=usableW*usableH
   const clearance=toMm(sheet.clearance,unit)
-  const items=designs.filter(d=>d.enabled).flatMap(d=>Array.from({length:Math.max(0,Math.floor(d.quantity))},(_,i)=>({d,copy:i+1}))).sort((a,b)=>b.d.width*b.d.height-a.d.width*a.d.height)
+  const items=designs.filter(d=>d.enabled).flatMap(d=>Array.from({length:Math.max(0,Math.floor(d.quantity))},(_,i)=>({d,copy:i+1}))).sort((a,b)=>compare?compare(a.d,b.d):b.d.width*b.d.height-a.d.width*a.d.height)
   const sheets:Piece[][]=[[]], unplaced:Piece[]=[]
   const bounds=(pts:Point[])=>({minX:Math.min(...pts.map(p=>p.x)),maxX:Math.max(...pts.map(p=>p.x)),minY:Math.min(...pts.map(p=>p.y)),maxY:Math.max(...pts.map(p=>p.y))})
   type Box={minX:number,maxX:number,minY:number,maxY:number}
   const placedAt=new Map<string,{pts:Point[];box:Box}>()
   const aabb=(a:Box,b:Box,pad:number)=>a.minX-pad<b.maxX&&b.minX-pad<a.maxX&&a.minY-pad<b.maxY&&b.minY-pad<a.maxY
-  const validAngles=(design:Design)=>angleOptions.filter(a=>a===0||a===90||a===180||a===270).filter(a=>design.rotation===0||a%360===design.rotation%360||design.rotation===90&&a%180===90)
+  // The angle set offered by the UI (90° steps or 15° steps) is honoured as-is;
+  // a per-design fixed rotation restricts it further. (Previously a hard
+  // multiple-of-90 filter discarded every 15° angle, so "free" mode never rotated.)
+  const validAngles=(design:Design)=>angleOptions.filter(a=>design.rotation===0||a%360===design.rotation%360||design.rotation===90&&a%180===90)
   const candList=new Map<number,Point[]>(), candKeys=new Map<number,Set<string>>()
   const ensure=(si:number)=>{ if(!candList.has(si)){ candList.set(si,[{x:m[3],y:m[0]}]); candKeys.set(si,new Set([`${m[3]}:${m[0]}`])) } }
   const addCand=(si:number,x:number,y:number)=>{
@@ -258,6 +306,31 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
   }
   while(sheets.length>1&&!sheets.at(-1)!.length) sheets.pop()
   if(sheets.length===1&&!sheets[0]!.length) sheets.pop()
-  const sheetArea=width*height
-  return {sheets,unplaced,utilization:sheets.map(group=>group.reduce((sum,p)=>{const d=designs.find(v=>v.id===p.designId)!; return sum+(d.width*d.height)},0)/sheetArea*100)}
+  // Utilization is true contour area over the *usable* area, so circles and
+  // other non-rectangular parts are not flattered by their bounding box.
+  const denom=usableArea>0?usableArea:(width*height)||1
+  return {sheets,unplaced,utilization:sheets.map(group=>group.reduce((sum,p)=>{const d=designs.find(v=>v.id===p.designId)!; return sum+polygonArea(pathPoints(d))},0)/denom*100)}
+}
+
+// Try several placement orderings and keep the best valid result within a time
+// budget. Deterministic: the same inputs always yield the same chosen layout.
+export async function packBest(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity, budgetMs = 1500): Promise<Layout> {
+  const strategies: ((a: Design, b: Design) => number)[] = [
+    (a, b) => b.width * b.height - a.width * a.height || b.height - a.height,
+    (a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height),
+    (a, b) => b.height - a.height || b.width - a.width,
+  ]
+  const better = (a: Layout, b: Layout) => {
+    if (a.unplaced.length !== b.unplaced.length) return a.unplaced.length < b.unplaced.length
+    if (a.sheets.length !== b.sheets.length) return a.sheets.length < b.sheets.length
+    return a.utilization.reduce((s, u) => s + u, 0) > b.utilization.reduce((s, u) => s + u, 0)
+  }
+  const deadline = Date.now() + Math.max(0, budgetMs)
+  let best: Layout | null = null
+  for (let i = 0; i < strategies.length; i++) {
+    if (i > 0 && Date.now() > deadline) break
+    const layout = await pack(designs, sheet, angleOptions, maxSheets, strategies[i])
+    if (!best || better(layout, best)) best = layout
+  }
+  return best!
 }

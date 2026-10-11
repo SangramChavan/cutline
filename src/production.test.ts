@@ -22,7 +22,8 @@ describe('production summary', () => {
     expect(summary.sheetCost).toBe(10)
     expect(summary.totalCost).toBeCloseTo(10 + summary.estimatedCutSeconds / 60 * 6, 6)
     expect(summary.costPerPiece).toBeCloseTo(summary.totalCost / 2, 6)
-    expect(summary.wasteAreaMm2).toBeCloseTo(300 * 200 - 2 * 40 * 40, 4)
+    expect(summary.usableAreaMm2).toBeCloseTo(290 * 190, 4)
+    expect(summary.wasteAreaMm2).toBeCloseTo(290 * 190 - 2 * 40 * 40, 4)
   })
   it('reports zero cost per piece when nothing is placed', () => {
     const layout = { sheets: [], unplaced: [], utilization: [] }

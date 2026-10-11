@@ -1,4 +1,4 @@
-import { piecePoints, toMm, type Design, type Layout, type Sheet } from './model'
+import { piecePoints, polygonArea, toMm, usableBounds, type Design, type Layout, type Sheet } from './model'
 
 export interface ProductionInputs {
   sheetPrice: number
@@ -14,6 +14,7 @@ export interface ProductionSummary {
   piecesPerSheet: number
   utilization: number
   usedAreaMm2: number
+  usableAreaMm2: number
   sheetAreaMm2: number
   wasteAreaMm2: number
   cutLengthMm: number
@@ -38,12 +39,13 @@ export function perimeter(points: { x: number; y: number }[]): number {
 
 export function summarize(designs: Design[], layout: Layout, sheet: Sheet, inputs: ProductionInputs = defaultProductionInputs): ProductionSummary {
   const sheetAreaMm2 = toMm(sheet.width, sheet.unit) * toMm(sheet.height, sheet.unit)
+  const usableAreaMm2 = usableBounds(sheet).area
   let placedPieces = 0, usedAreaMm2 = 0, cutLengthMm = 0
   for (const pieces of layout.sheets) {
     for (const p of pieces) {
       const d = designs.find(v => v.id === p.designId)!
       placedPieces++
-      usedAreaMm2 += p.width * p.height
+      usedAreaMm2 += polygonArea(piecePoints(p, d))
       cutLengthMm += perimeter(piecePoints(p, d))
     }
   }
@@ -60,8 +62,9 @@ export function summarize(designs: Design[], layout: Layout, sheet: Sheet, input
     piecesPerSheet: sheets ? placedPieces / sheets : 0,
     utilization,
     usedAreaMm2,
+    usableAreaMm2,
     sheetAreaMm2,
-    wasteAreaMm2: sheets * sheetAreaMm2 - usedAreaMm2,
+    wasteAreaMm2: sheets * usableAreaMm2 - usedAreaMm2,
     cutLengthMm,
     pierceCount: placedPieces,
     estimatedCutSeconds,

@@ -1,5 +1,5 @@
 import { PDFDocument, rgb } from 'pdf-lib'
-import { pathPoints, piecePoints, pointsToPath, toMm, type Design, type Layout, type Piece, type Sheet } from './model'
+import { pathPoints, piecePoints, pointsToPath, polygonArea, toMm, usableBounds, type Design, type Layout, type Piece, type Sheet } from './model'
 
 const encoder = new TextEncoder()
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]!)
@@ -13,6 +13,12 @@ export interface ExportOptions {
   cutWidthMm?: number
   dpi?: number
   marks?: boolean
+  scaleMark?: boolean
+  jobName?: string
+  material?: string
+  // Self-contained artwork for the SVG print layer: design id -> data: URL.
+  // Falls back to the design's own URL (fine for tests / already-inline art).
+  hrefs?: Map<string, string>
 }
 
 function hexToRgb(hex: string) {
@@ -33,10 +39,12 @@ async function bytesOf(design: Design) {
 }
 
 export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { border = false, cut = true, cutColor = '#e11d48', cutWidthMm = 0.25, dpi = 300, marks = false } = options
+  const { border = false, cut = true, cutColor = '#e11d48', cutWidthMm = 0.25, dpi = 300, marks = false, scaleMark = true, jobName, material } = options
   const pageW = toMm(sheet.width, sheet.unit) * PT_PER_MM, pageH = toMm(sheet.height, sheet.unit) * PT_PER_MM
   const pdf = await PDFDocument.create()
-  pdf.setTitle('Acrylic production print sheets')
+  pdf.setTitle(jobName ? `${jobName} — Cutline print sheets` : 'Cutline print sheets')
+  pdf.setProducer('Cutline — local-first production studio')
+  if (jobName || material) pdf.setSubject([jobName, material].filter(Boolean).join(' · '))
   const embeddedCache = new Map<string, Awaited<ReturnType<typeof pdf.embedPng>>>()
   const embed = async (design: Design) => {
     const cached = embeddedCache.get(design.id)
@@ -63,6 +71,16 @@ export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, 
       if (cut) page.drawSvgPath(piecePath(p, d), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: hexToRgb(cutColor), borderWidth: cutWidthMm })
       if (border) page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(.1, .12, .15), borderWidth: .35 })
       if (marks) page.drawText(p.id.slice(-5), { x: x + 1, y: y + 1, size: 5, color: rgb(.55, .1, .2) })
+    }
+    // 1:1 scale reference: a 100 mm bar with end ticks. Print without scaling and
+    // measure this to confirm the page is true size before cutting.
+    if (scaleMark) {
+      const bar = 100 * PT_PER_MM, bx = 6 * PT_PER_MM, by = 6 * PT_PER_MM
+      page.drawText('verify 1:1 →', { x: bx, y: by + 2 * PT_PER_MM, size: 5, color: rgb(.35, .38, .4) })
+      page.drawLine({ start: { x: bx, y: by }, end: { x: bx + bar, y: by }, thickness: .6, color: rgb(0, 0, 0) })
+      page.drawLine({ start: { x: bx, y: by - 1.5 * PT_PER_MM }, end: { x: bx, y: by + 1.5 * PT_PER_MM }, thickness: .6, color: rgb(0, 0, 0) })
+      page.drawLine({ start: { x: bx + bar, y: by - 1.5 * PT_PER_MM }, end: { x: bx + bar, y: by + 1.5 * PT_PER_MM }, thickness: .6, color: rgb(0, 0, 0) })
+      page.drawText('100 mm', { x: bx + bar + 1.5 * PT_PER_MM, y: by - .5 * PT_PER_MM, size: 5, color: rgb(.35, .38, .4) })
     }
   }
   return new Uint8Array(await pdf.save())
@@ -109,14 +127,17 @@ function loadImage(url: string) {
 }
 
 export function buildSvg(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { marks = false, cutColor = '#ff0000', cutWidthMm = 0.01 } = options
+  const { marks = false, cutColor = '#ff0000', cutWidthMm = 0.01, hrefs } = options
   const widthMm = toMm(sheet.width, sheet.unit), heightMm = toMm(sheet.height, sheet.unit)
   return layout.sheets.map((pieces, i) => {
     const artwork = pieces.map(p => {
       const d = designs.find(v => v.id === p.designId)!
       const clip = `clip-${p.id.replace(/[^\w-]/g, '-')}`
       const path = piecePath(p, d)
-      return `<defs><clipPath id="${clip}"><path d="${esc(path)}"/></clipPath></defs><g clip-path="url(#${clip})"><image href="${esc(d.url)}" x="${p.x.toFixed(4)}" y="${p.y.toFixed(4)}" width="${p.width.toFixed(4)}" height="${p.height.toFixed(4)}" preserveAspectRatio="xMidYMid meet"/></g>${marks ? `<text x="${p.x}" y="${p.y + 3}" font-size="2">${esc(p.id)}</text>` : ''}`
+      // d.url is a session blob: URL, dead once the tab closes. Embed the real
+      // bytes (data: URL) so the exported SVG is self-contained and reusable.
+      const href = hrefs?.get(d.id) ?? d.url
+      return `<defs><clipPath id="${clip}"><path d="${esc(path)}"/></clipPath></defs><g clip-path="url(#${clip})"><image href="${esc(href)}" x="${p.x.toFixed(4)}" y="${p.y.toFixed(4)}" width="${p.width.toFixed(4)}" height="${p.height.toFixed(4)}" preserveAspectRatio="xMidYMid meet"/></g>${marks ? `<text x="${p.x}" y="${p.y + 3}" font-size="2">${esc(p.id)}</text>` : ''}`
     }).join('\n')
     const cuts = pieces.map(p => { const d = designs.find(v => v.id === p.designId)!; return `<path d="${esc(piecePath(p, d))}"/>` }).join('\n')
     return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${mm(widthMm)}" height="${mm(heightMm)}" viewBox="0 0 ${widthMm} ${heightMm}"><title>Cutline sheet ${i + 1}</title><g id="print-artwork">${artwork}</g><g id="cut" fill="none" stroke="${cutColor}" stroke-width="${cutWidthMm}">${cuts}</g></svg>`
@@ -163,3 +184,40 @@ export async function makePng(designs: Design[], pieces: Piece[], sheet: Sheet) 
 }
 
 export function csvTextBlob(text: string) { return new Blob([encoder.encode(text)], { type: 'text/csv;charset=utf-8' }) }
+
+// Human-readable job report bundled with the production exports and shown
+// before export. Plain text so it survives any downstream tooling.
+export function buildReport(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
+  const usable = usableBounds(sheet)
+  const used = polygonAreaSum(designs, layout)
+  const placed = layout.sheets.reduce((n, s) => n + s.length, 0)
+  const usedArea = layout.sheets.length * usable.area
+  return [
+    'CUTLINE JOB REPORT',
+    '-------------------',
+    `Job name:          ${options.jobName || '—'}`,
+    `Material:          ${options.material || '—'}`,
+    `Units:             mm (all exports in millimetres)`,
+    '',
+    `Sheet size:        ${toMm(sheet.width, sheet.unit).toFixed(2)} × ${toMm(sheet.height, sheet.unit).toFixed(2)} mm (input in ${sheet.unit})`,
+    `Usable area:       ${usable.width.toFixed(2)} × ${usable.height.toFixed(2)} mm at x=${usable.x.toFixed(2)}, y=${usable.y.toFixed(2)}`,
+    `Margins T/R/B/L:   ${sheet.marginTop} / ${sheet.marginRight} / ${sheet.marginBottom} / ${sheet.marginLeft} ${sheet.unit}`,
+    `Min clearance:     ${sheet.clearance} ${sheet.unit}`,
+    '',
+    `Sheets used:       ${layout.sheets.length}`,
+    `Pieces placed:     ${placed}`,
+    `Pieces unplaced:   ${layout.unplaced.length}`,
+    `Used area:         ${(used / 100).toFixed(2)} cm²`,
+    `Usable area total: ${(usedArea / 100).toFixed(2)} cm²`,
+    `Waste area:        ${((usedArea - used) / 100).toFixed(2)} cm²`,
+    `Utilization:       ${(usedArea ? used / usedArea * 100 : 0).toFixed(1)}%`,
+    '',
+    `Warnings:          ${layout.unplaced.length ? `${layout.unplaced.length} part(s) could not be placed.` : 'none'}`,
+  ].join('\n')
+}
+
+function polygonAreaSum(designs: Design[], layout: Layout) {
+  let sum = 0
+  for (const pieces of layout.sheets) for (const p of pieces) { const d = designs.find(v => v.id === p.designId); if (d) sum += polygonArea(piecePoints(p, d)) }
+  return sum
+}

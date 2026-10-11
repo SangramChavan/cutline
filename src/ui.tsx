@@ -295,7 +295,7 @@ export default function App(){
   const maxW=toMm(effectiveSheet.width,effectiveSheet.unit),maxH=toMm(effectiveSheet.height,effectiveSheet.unit)
   const maxPacks=designs.reduce((n,d)=>n+(d.enabled?d.quantity:0),0)
   return <main className="app-shell">
-    <header className="topbar"><a className="brand" href="#"><span className="brand-mark">C</span><span>CUTLINE<small>ACRYLIC PRODUCTION STUDIO</small></span></a><div className="top-status"><span className="live-dot"/> LOCAL WORKSPACE <span className="top-divider"/> JOB · {designs.length?`${designs.length} DESIGNS`:'UNTITLED'}</div><button className="quiet-button" onClick={()=>{if(confirm('Start a new job? Current artwork is removed from memory.')){setDesigns([]);setLayout({sheets:[],unplaced:[],utilization:[]})}}}>New job <span>↗</span></button></header>
+    <header className="topbar"><a className="brand" href="#"><span className="brand-mark">C</span><span>CUTLINE<small>PRODUCTION STUDIO</small></span></a><div className="top-status"><span className="live-dot"/> LOCAL WORKSPACE <span className="top-divider"/> JOB · {designs.length?`${designs.length} DESIGNS`:'UNTITLED'}</div><button className="quiet-button" onClick={()=>{if(confirm('Start a new job? Current artwork is removed from memory.')){setDesigns([]);setLayout({sheets:[],unplaced:[],utilization:[]})}}}>New job <span>↗</span></button></header>
     <div className="workspace">
       <aside className="side-panel">
         <div className="panel-heading"><div><span className="eyebrow">PRODUCTION SETUP</span><h1>Build a cut layout</h1></div><span className="step-count">01 / 04</span></div>

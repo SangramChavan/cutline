@@ -8,7 +8,7 @@ import { defaultMachineProfile, estimateCutting, formatDuration, suggestedProfil
 import NestWorker from './nest.worker?worker'
 
 const extensions = new Set(['png','jpg','jpeg','webp','svg'])
-const initialSheet: Sheet = {width:600,height:400,unit:'mm',marginTop:10,marginRight:10,marginBottom:10,marginLeft:10,clearance:0}
+const initialSheet: Sheet = {width:600,height:400,unit:'mm',marginTop:0,marginRight:0,marginBottom:0,marginLeft:0,clearance:0}
 const id=()=>crypto.randomUUID()
 const imageMime=(name:string)=>({png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',webp:'image/webp',svg:'image/svg+xml'}[name.split('.').at(-1)!.toLowerCase()]||'')
 const shapes: Shape[]=['rectangle','square','rounded','circle','ellipse','polygon','svg']

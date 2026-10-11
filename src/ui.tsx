@@ -5,6 +5,9 @@ import { canvasToPng, renderFinalCanvas } from './compose'
 import PieceEditor, { defaultQr } from './editor'
 import { fitSize, fromMm, marginsFromUsable, packBest, pathPoints, toMm, validatePolygon, validateUsableRect, type Design, type Layout, type QrConfig, type Shape, type Sheet } from './model'
 import { defaultMachineProfile, estimateCutting, formatDuration, suggestedProfiles, type MachineProfile } from './production'
+import BatchPanel, { type Scope } from './batch'
+import { matchCsv, readMappings, type ImportReport } from './csv'
+import { applyImageToTargets, applyQrToTargets, emptyImageSettings, emptyQrSettings, imageHasOverride, qrHasOverride, type GlobalImageSettings, type GlobalQrSettings } from './settings'
 import NestWorker from './nest.worker?worker'
 
 const extensions = new Set(['png','jpg','jpeg','webp','svg'])
@@ -49,7 +52,11 @@ export default function App(){
   const [locked,setLocked]=useState<string[]>([])
   const [editing,setEditing]=useState<string|null>(null)
   const [bridge,setBridge]=useState(2)
-  const [qrGlobal,setQrGlobal]=useState({text:'',ecLevel:'M' as QrConfig['ecLevel'],sizeMm:20,quietModules:4})
+  const [img,setImg]=useState<GlobalImageSettings>(emptyImageSettings())
+  const [qr,setQr]=useState<GlobalQrSettings>(emptyQrSettings())
+  const [csv,setCsv]=useState<{name:string;report:ImportReport}|null>(null)
+  const [query,setQuery]=useState('')
+  const [listFilter,setListFilter]=useState<'all'|'with'|'without'|'invalid'|'selected'>('all')
   const [machine,setMachine]=useState<MachineProfile>(()=>{try{const s=localStorage.getItem('cutline-machine');return s?{...defaultMachineProfile,...JSON.parse(s)}:defaultMachineProfile}catch{return defaultMachineProfile}})
   const [inspect,setInspect]=useState<string|null>(null)
   const [jobName,setJobName]=useState('')
@@ -110,6 +117,14 @@ export default function App(){
   const selectedCount=designs.filter(d=>d.selected).length
   const allSelected=designs.length>0&&designs.every(d=>d.selected)
   const bulkTargets=selectedCount?designs.filter(d=>d.selected):designs
+  const visibleDesigns=useMemo(()=>designs.filter(d=>{
+    if(query&&!`${d.name} ${d.path}`.toLowerCase().includes(query.trim().toLowerCase()))return false
+    if(listFilter==='with'&&!d.qr?.enabled)return false
+    if(listFilter==='without'&&d.qr?.enabled)return false
+    if(listFilter==='invalid'&&!designError(d))return false
+    if(listFilter==='selected'&&!d.selected)return false
+    return true
+  }),[designs,query,listFilter])
   function applyBulk(){
     const patch:Partial<Design>={}
     if(bulk.w!=='')patch.width=toMm(Number(bulk.w),sheet.unit)
@@ -204,14 +219,58 @@ export default function App(){
     setDesigns(old=>old.map(d=>d.enabled?{...d,qr:{...qr,x:Math.round((d.width-qr.sizeMm)/2),y:Math.round((d.height-qr.sizeMm)/2)}}:d))
     setMessage('QR code applied to every enabled design.')
   }
-  async function importCsv(file:File){
-    const text=await file.text(),lines=text.split(/\r?\n/).filter(Boolean),header=(lines.shift()||'').split(',').map(s=>s.replace(/^"|"$/g,'').trim().toLowerCase()),index=(...keys:string[])=>header.findIndex(h=>keys.includes(h))
-    const pathCol=index('path','relative_path','filename','name'),wCol=index('width','width_mm','piece_width'),hCol=index('height','height_mm','piece_height'),qCol=index('quantity','qty'),shapeCol=index('shape','cut_shape'),rCol=index('radius','corner_radius')
-    if(pathCol<0||wCol<0||hCol<0){setMessage('CSV needs filename/path, width and height columns. Dimensions are interpreted in the selected sheet unit.');return}
-    const rows=lines.map(line=>line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(v=>v.replace(/^"|"$/g,'').replace(/""/g,'"')))
-    let missed=0
-    setDesigns(old=>old.map(d=>{const row=rows.find(r=>r[pathCol]===d.path||r[pathCol]===d.name);if(!row){missed++;return d};const width=Number(row[wCol]),height=Number(row[hCol]),shape=(row[shapeCol]||d.shape).toLowerCase() as Shape;return{...d,width:toMm(width,sheet.unit),height:toMm(height,sheet.unit),quantity:qCol>=0?Math.max(1,Number(row[qCol])||1):d.quantity,shape:shapes.includes(shape)?shape:d.shape,radius:rCol>=0?Number(row[rCol])||d.radius:d.radius}}))
-    setMessage(`Applied CSV settings. ${missed} artwork item(s) had no matching row and kept their current settings.`)
+  function scopeIds(scope:Scope){return scope==='selected'?new Set(designs.filter(d=>d.selected).map(d=>d.id)):null}
+  function applyImageScope(scope:Scope){
+    const ids=scopeIds(scope)
+    if(scope==='selected'&&!ids?.size){setMessage('Select designs first, or switch Apply to → All.');return}
+    const n=ids?ids.size:designs.length
+    setDesigns(applyImageToTargets(designs,ids,img))
+    setLayout({sheets:[],unplaced:[],utilization:[]})
+    setMessage(`Applied image settings to ${n} design${n===1?'':'s'} (${scope==='selected'?'selected':'all'}).`)
+  }
+  function applyQrScope(scope:Scope){
+    const ids=scopeIds(scope)
+    if(scope==='selected'&&!ids?.size){setMessage('Select designs first, or switch Apply to → All.');return}
+    const n=ids?ids.size:designs.length
+    setDesigns(applyQrToTargets(designs,ids,qr))
+    setMessage(`Applied QR settings to ${n} design${n===1?'':'s'} (${scope==='selected'?'selected':'all'}).`)
+  }
+  function resetOverrides(scope:Scope){
+    const ids=scopeIds(scope)
+    const n=ids?ids.size:designs.length
+    setDesigns(old=>applyQrToTargets(applyImageToTargets(old,ids,img),ids,qr))
+    setMessage(`Re-applied global settings to ${n} design${n===1?'':'s'}, clearing individual overrides.`)
+  }
+  function removeAllQr(){setDesigns(old=>old.map(d=>({...d,qr:undefined})));setMessage('Removed QR codes from every design.')}
+  async function stageCsv(file:File){
+    try{
+      const report=matchCsv(readMappings(await file.text()),designs.map(d=>({id:d.id,name:d.name,path:d.path})))
+      setCsv({name:file.name,report})
+      setMessage(`CSV parsed: ${report.matched} matched · ${report.unmatched} unmatched · ${report.duplicates} duplicate${report.duplicates===1?'':'s'} · ${report.invalidRows} row error${report.invalidRows===1?'':'s'}. Review the table, then apply.`)
+    }catch{setMessage('CSV could not be read. Check that the file is a valid .csv.')}
+  }
+  function commitCsv(){
+    if(!csv)return
+    const byId=new Map(csv.report.matches.filter(m=>m.status==='matched'&&m.designId).map(m=>[m.designId!,m]))
+    if(!byId.size){setMessage('No CSV rows matched an image; nothing was applied.');return}
+    setDesigns(old=>old.map(d=>{
+      const m=byId.get(d.id);if(!m)return d
+      const next:Design={...d}
+      if(m.widthMm!==undefined)next.width=m.widthMm
+      if(m.heightMm!==undefined)next.height=m.heightMm
+      if(m.shape)next.shape=m.shape as Shape
+      if(m.cornerRadiusMm!==undefined){next.radius=m.cornerRadiusMm;if(next.shape!=='rounded')next.shape='rounded'}
+      if(m.quantity!==undefined)next.quantity=Math.max(1,Math.round(m.quantity))
+      if(m.qrContent!==undefined||m.qrSizeMm!==undefined||m.qrRotation!==undefined){
+        const base=next.qr?{...next.qr}:defaultQr({width:next.width,height:next.height})
+        next.qr={...base,enabled:true,...(m.qrContent!==undefined?{text:m.qrContent}:{}),...(m.qrSizeMm!==undefined?{sizeMm:m.qrSizeMm}:{}),...(m.qrRotation!==undefined?{rotation:m.qrRotation}:{})}
+      }
+      return next
+    }))
+    setLayout({sheets:[],unplaced:[],utilization:[]})
+    const n=byId.size
+    setMessage(`Applied CSV to ${n} image${n===1?'':'s'}${csv.report.unmatched?`; ${csv.report.unmatched} unmatched row${csv.report.unmatched===1?'':'s'} skipped`:''}.`)
+    setCsv(null)
   }
   function saveProfile(){if(!profileName.trim())return;const profiles=JSON.parse(localStorage.getItem('cutline-profiles')||'{}');profiles[profileName]={sheet,designDefaults:{shape:'rectangle',width:50,height:50,quantity:1},border,borderColor,angleMode};localStorage.setItem('cutline-profiles',JSON.stringify(profiles));setMessage(`Saved profile “${profileName}” in this browser.`)}
   function loadProfiles(){return Object.keys(JSON.parse(localStorage.getItem('cutline-profiles')||'{}'))}
@@ -234,21 +293,22 @@ export default function App(){
       <aside className="side-panel">
         <div className="panel-heading"><div><span className="eyebrow">PRODUCTION SETUP</span><h1>Build a cut layout</h1></div><span className="step-count">01 / 04</span></div>
         <div className="section-label"><span>01</span> ARTWORK FILES <b>{designs.length.toString().padStart(2,'0')}</b></div>
-        <button className="upload-zone" onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const f=Array.from(e.dataTransfer.files);if(f.length===1&&f[0]!.name.toLowerCase().endsWith('.zip'))void handleZip(f[0]!);else void addFiles(f)}}>
+        <button className="upload-zone" onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const f=Array.from(e.dataTransfer.files);if(f.length===1&&f[0]!.name.toLowerCase().endsWith('.zip'))void handleZip(f[0]!);else if(f.length===1&&f[0]!.name.toLowerCase().endsWith('.csv'))void stageCsv(f[0]!);else void addFiles(f)}}>
           <span className="upload-icon">↑</span><strong>Drop artwork or a ZIP here</strong><span>PNG · JPG · WEBP · SVG · CSV settings</span><small>Files stay on this device</small>
-        </button><input hidden ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.webp,.svg,.zip" onChange={e=>{const f=Array.from(e.target.files||[]);for(const file of f)if(file.name.toLowerCase().endsWith('.zip'))void handleZip(file);else if(file.name.toLowerCase().endsWith('.csv'))void importCsv(file);else void addFiles([file]);e.currentTarget.value=''}}/>
-        <div className="quick-row"><label className="file-button">＋ Add artwork<input type="file" multiple accept=".png,.jpg,.jpeg,.webp,.svg" onChange={e=>e.target.files&&void addFiles(e.target.files)}/></label><label className="file-button secondary">↥ Import CSV<input type="file" accept=".csv" onChange={e=>e.target.files?.[0]&&void importCsv(e.target.files[0])}/></label></div>
+        </button><input hidden ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.webp,.svg,.zip" onChange={e=>{const f=Array.from(e.target.files||[]);for(const file of f)if(file.name.toLowerCase().endsWith('.zip'))void handleZip(file);else if(file.name.toLowerCase().endsWith('.csv'))void stageCsv(file);else void addFiles([file]);e.currentTarget.value=''}}/>
+        <div className="quick-row"><label className="file-button">＋ Add artwork<input type="file" multiple accept=".png,.jpg,.jpeg,.webp,.svg" onChange={e=>e.target.files&&void addFiles(e.target.files)}/></label><label className="file-button secondary">↥ Import CSV<input type="file" accept=".csv" onChange={e=>e.target.files?.[0]&&void stageCsv(e.target.files[0])}/></label></div>
         {designs.length>0&&<div className="bulk-bar">
           <label className="select-all"><input type="checkbox" checked={allSelected} onChange={e=>setDesigns(old=>old.map(d=>({...d,selected:e.target.checked})))}/><b>{selectedCount?`${selectedCount} selected`:'Select all'}</b></label>
           <div className="bulk-fields"><span className="bulk-scope">{selectedCount?'→ SELECTED':'→ ALL'}</span><label>W<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.w} onChange={e=>setBulk(b=>({...b,w:e.target.value}))}/></label><label>H<input type="number" min="0.1" step="0.1" placeholder="—" value={bulk.h} onChange={e=>setBulk(b=>({...b,h:e.target.value}))}/></label><label>QTY<input type="number" min="1" step="1" placeholder="—" value={bulk.q} onChange={e=>setBulk(b=>({...b,q:e.target.value}))}/></label><button className="bulk-apply" onClick={applyBulk}>Apply</button></div>
           <div className="bulk-match"><span>px→mm</span><input type="number" min="0.01" step="0.1" value={pxScale} onChange={e=>setPxScale(Number(e.target.value)||1)}/><button onClick={matchImageSize}>Size = image</button></div>
         </div>}
+        {designs.length>0&&<div className="list-toolbar"><input className="list-search" type="search" placeholder="Search filenames…" aria-label="Search artwork" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Filter images" value={listFilter} onChange={e=>setListFilter(e.target.value as typeof listFilter)}><option value="all">All images</option><option value="with">Has QR</option><option value="without">No QR</option><option value="invalid">Needs attention</option><option value="selected">Selected</option></select><button type="button" className="quiet-button" onClick={()=>setDesigns(old=>old.map(d=>({...d,selected:false})))}>Deselect all</button></div>}
         <section className="design-list">
-          {designs.length===0?<div className="empty-art"><div className="empty-art-icon">▧</div><p>Your artwork will appear here</p><span>Add a ZIP to keep a production batch together.</span></div>:designs.map((d,i)=>{
+          {designs.length===0?<div className="empty-art"><div className="empty-art-icon">▧</div><p>Your artwork will appear here</p><span>Add a ZIP to keep a production batch together.</span></div>:visibleDesigns.length===0?<div className="empty-art"><div className="empty-art-icon">⌕</div><p>No images match</p><span>Clear the search or filter to see all {designs.length} images.</span></div>:visibleDesigns.map(d=>{
             const error=designError(d)
-            const duplicate=designs.some((other,j)=>j!==i&&(d.hash?other.hash===d.hash:other.name===d.name))
+            const duplicate=designs.some(other=>other.id!==d.id&&(d.hash?other.hash===d.hash:other.name===d.name))
             return <article className={`design-card ${error?'invalid':''}`} key={d.id}>
-              <div className="design-main"><input type="checkbox" className="pick" aria-label={`Select ${d.name}`} checked={!!d.selected} onChange={()=>changeDesign(d.id,{selected:!d.selected})}/><div className="thumb">{d.mime==='image/svg+xml'?<img src={d.url} alt=""/>:<img src={d.url} alt=""/>}</div><div className="design-name"><strong title={d.path}>{d.name}</strong><span title={d.path}>{d.path}</span><small>{d.imageWidth} × {d.imageHeight} px{duplicate?(d.hash?' · duplicate file':' · duplicate filename'):''}</small></div><button className={`toggle ${d.enabled?'on':''}`} aria-label="Toggle design" onClick={()=>changeDesign(d.id,{enabled:!d.enabled})}>{d.enabled?'✓':'−'}</button></div>
+              <div className="design-main"><input type="checkbox" className="pick" aria-label={`Select ${d.name}`} checked={!!d.selected} onChange={()=>changeDesign(d.id,{selected:!d.selected})}/><div className="thumb">{d.mime==='image/svg+xml'?<img src={d.url} alt=""/>:<img src={d.url} alt=""/>}</div><div className="design-name"><strong title={d.path}>{d.name}</strong><span title={d.path}>{d.path}</span><small>{d.imageWidth} × {d.imageHeight} px{duplicate?(d.hash?' · duplicate file':' · duplicate filename'):''}</small>{(imageHasOverride(d,img)||qrHasOverride(d,qr))&&<span className="override-tag" title="Differs from the global batch settings">override</span>}</div><button className={`toggle ${d.enabled?'on':''}`} aria-label="Toggle design" onClick={()=>changeDesign(d.id,{enabled:!d.enabled})}>{d.enabled?'✓':'−'}</button></div>
               <div className="design-fields"><label>W <input aria-label="Piece width" type="number" min="0.1" step="0.1" value={Number(fromMm(d.width,sheet.unit).toFixed(2))} onChange={e=>{const mm=toMm(Number(e.target.value),sheet.unit);changeDesign(d.id,d.lockRatio&&d.imageWidth>0?{width:mm,height:mm*d.imageHeight/d.imageWidth}:{width:mm})}}/><i>{sheet.unit}</i></label><label>H <input aria-label="Piece height" type="number" min="0.1" step="0.1" value={Number(fromMm(d.height,sheet.unit).toFixed(2))} onChange={e=>{const mm=toMm(Number(e.target.value),sheet.unit);changeDesign(d.id,d.lockRatio&&d.imageHeight>0?{height:mm,width:mm*d.imageWidth/d.imageHeight}:{height:mm})}}/><i>{sheet.unit}</i></label><button type="button" className={`toggle ${d.lockRatio?'on':''}`} title={d.lockRatio?'Aspect ratio linked to artwork — click to free':'Link width & height to the artwork aspect ratio'} aria-label="Lock aspect ratio" aria-pressed={!!d.lockRatio} onClick={()=>changeDesign(d.id,{lockRatio:!d.lockRatio})}>⇄</button><label>QTY <input aria-label="Quantity" type="number" min="1" step="1" value={d.quantity} onChange={e=>changeDesign(d.id,{quantity:Math.max(0,Number(e.target.value))})}/></label></div>
               <div className="design-fields secondary-fields"><label className="shape-select">SHAPE <select aria-label="Cutting shape" value={d.shape} onChange={e=>changeDesign(d.id,{shape:e.target.value as Shape})}>{shapes.map(s=><option value={s} key={s}>{s.toUpperCase()}</option>)}</select></label>{d.shape==='rounded'&&<label>R <input type="number" value={d.radius} onChange={e=>changeDesign(d.id,{radius:Number(e.target.value)})}/><i>{sheet.unit}</i></label>}<label>ROT° <select value={d.rotation} onChange={e=>changeDesign(d.id,{rotation:Number(e.target.value)})}><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label><button type="button" className={`toggle ${editing===d.id?'on':''}`} title="Keychain holes & QR editor" aria-label="Edit holes and QR" aria-expanded={editing===d.id} onClick={()=>setEditing(editing===d.id?null:d.id)}>⌾ Holes/QR{(d.holes?.length||d.qr?.enabled)?` · ${d.holes?.length||0}${d.qr?.enabled?' +QR':''}`:''}</button><button className="delete-button" aria-label="Remove design" onClick={()=>setDesigns(old=>old.filter(v=>v.id!==d.id))}>×</button></div>
               {d.shape==='polygon'&&<label className="svg-input">Vertices (x,y in physical units)<textarea placeholder="0,0  40,0  35,30  5,35" value={d.points?.map(p=>`${p.x},${p.y}`).join(' ')||''} onChange={e=>{const points=e.target.value.trim().split(/\s+/).map(pair=>pair.split(',').map(Number)).filter(pair=>pair.length===2&&pair.every(Number.isFinite)).map(([x,y])=>({x:x!,y:y!}));changeDesign(d.id,{points})}}/></label>}
@@ -280,7 +340,7 @@ export default function App(){
         {layout.unplaced.length>0&&<div className="unplaced">{layout.unplaced.length} unplaced pieces: {layout.unplaced.slice(0,4).map(p=>p.id).join(', ')}{layout.unplaced.length>4?'…':''}</div>}
         {inspected&&inspectedDesign&&<section className="inspector-panel"><div className="inspector-head"><span className="eyebrow">PIECE INSPECTOR</span><button aria-label="Close inspector" onClick={()=>setInspect(null)}>×</button></div><dl><div><dt>Design</dt><dd>{inspectedDesign.name}</dd></div><div><dt>Source file</dt><dd title={inspectedDesign.path}>{inspectedDesign.path}</dd></div><div><dt>Copy</dt><dd>#{inspected.copy}</dd></div><div><dt>Sheet</dt><dd>{activeSheet+1} of {layout.sheets.length}</dd></div><div><dt>Position</dt><dd>{inspected.x.toFixed(1)}, {inspected.y.toFixed(1)} {sheet.unit}</dd></div><div><dt>Size</dt><dd>{inspected.width.toFixed(1)} × {inspected.height.toFixed(1)} {sheet.unit}</dd></div><div><dt>Rotation</dt><dd>{inspected.rotation}°</dd></div><div><dt>Shape</dt><dd>{inspectedDesign.shape}{locked.includes(inspected.id)?' · locked':''}</dd></div></dl></section>}
         <section className="production-panel"><div className="export-heading"><div><span className="eyebrow">CUTTING ESTIMATE</span><h3>Material & machine time</h3></div><button type="button" className="quiet-button" onClick={()=>setMachine(defaultMachineProfile)}>Reset</button></div><div className="prod-grid"><div><span>Pieces placed</span><strong>{estimate.parts}</strong></div><div><span>Sheets</span><strong>{estimate.sheets}</strong></div><div><span>Contours</span><strong>{estimate.contourCount}</strong></div><div><span>Cut path</span><strong>{((estimate.externalLengthMm+estimate.holeLengthMm)/1000).toFixed(2)} m</strong></div><div><span>Laser-on time</span><strong>{formatDuration(estimate.laserOnSeconds)}</strong></div><div><span>Total time</span><strong>{formatDuration(estimate.totalSeconds)}</strong></div><div><span>Per sheet</span><strong>{formatDuration(estimate.secondsPerSheet)}</strong></div><div><span>Per part</span><strong>{formatDuration(estimate.secondsPerPart)}</strong></div>{estimate.totalCost>0&&<div><span>Total cost</span><strong>{estimate.totalCost.toFixed(2)}</strong></div>}</div><div className="prod-inputs"><label>Material<input value={machine.material} onChange={e=>setMachine(m=>({...m,material:e.target.value}))}/></label><label>Tested preset<select aria-label="Machine preset" value="" onChange={e=>{const p=suggestedProfiles.find(x=>`${x.material} · ${x.thicknessMm}mm`===e.target.value);if(p)setMachine(m=>({...m,material:p.material,thicknessMm:p.thicknessMm,cutSpeedMmPerSecond:p.speedMmPerSecond,passes:p.passes}))}}><option value="" disabled>Starting point…</option>{suggestedProfiles.map(p=><option key={`${p.material}${p.thicknessMm}`} value={`${p.material} · ${p.thicknessMm}mm`}>{p.material} · {p.thicknessMm} mm</option>)}</select></label></div><div className="prod-inputs"><label>Thickness mm<input type="number" min="0" step="0.1" value={machine.thicknessMm} onChange={e=>setMachine(m=>({...m,thicknessMm:Number(e.target.value)||0}))}/></label><label>Power %<input type="number" min="0" max="100" step="1" value={machine.powerPercent} onChange={e=>setMachine(m=>({...m,powerPercent:Number(e.target.value)||0}))}/></label><label>Cut speed mm/s<input type="number" min="0" step="1" value={machine.cutSpeedMmPerSecond} onChange={e=>setMachine(m=>({...m,cutSpeedMmPerSecond:Number(e.target.value)||0}))}/></label><label>Passes<input type="number" min="1" step="1" value={machine.passes} onChange={e=>setMachine(m=>({...m,passes:Math.max(1,Math.floor(Number(e.target.value)||1))}))}/></label><label>Pierce s/contour<input type="number" min="0" step="0.1" value={machine.pierceSeconds} onChange={e=>setMachine(m=>({...m,pierceSeconds:Number(e.target.value)||0}))}/></label><label>Lead-in/out mm<input type="number" min="0" step="0.1" value={machine.leadInMm+machine.leadOutMm} onChange={e=>setMachine(m=>({...m,leadInMm:Number(e.target.value)||0,leadOutMm:0}))}/></label><label>Travel mm/s<input type="number" min="0" step="1" value={machine.travelSpeedMmPerSecond} onChange={e=>setMachine(m=>({...m,travelSpeedMmPerSecond:Number(e.target.value)||0}))}/></label><label>Travel mm/contour<input type="number" min="0" step="0.1" value={machine.travelBetweenMm} onChange={e=>setMachine(m=>({...m,travelBetweenMm:Number(e.target.value)||0}))}/></label><label>Handling s/sheet<input type="number" min="0" step="0.1" value={machine.handlingSecondsPerSheet} onChange={e=>setMachine(m=>({...m,handlingSecondsPerSheet:Number(e.target.value)||0}))}/></label><label>Setup s<input type="number" min="0" step="0.1" value={machine.setupSeconds} onChange={e=>setMachine(m=>({...m,setupSeconds:Number(e.target.value)||0}))}/></label><label>Sheet price<input type="number" min="0" step="0.01" value={machine.sheetPrice} onChange={e=>setMachine(m=>({...m,sheetPrice:Number(e.target.value)||0}))}/></label><label>Cut rate / min<input type="number" min="0" step="0.01" value={machine.cutRatePerMinute} onChange={e=>setMachine(m=>({...m,cutRatePerMinute:Number(e.target.value)||0}))}/></label></div>{estimate.missing.length>0&&<div className="validation">! Enter {estimate.missing.join(', ')} for a complete estimate — the time shown is missing that factor.</div>}<small className="note">Thickness alone never sets a cutting speed: enter the material + thickness + speed your machine was tested at. The presets are rough starting points, not verified parameters. Cutting time = contour path ÷ feed rate + pierce + travel + handling + setup.</small></section>
-        <section className="production-panel"><div className="export-heading"><div><span className="eyebrow">QR CODES</span><h3>Brand & links</h3></div></div><div className="prod-inputs"><label>Default QR text<input value={qrGlobal.text} placeholder="Text or URL to encode" onChange={e=>setQrGlobal(q=>({...q,text:e.target.value}))}/></label><label>Error correction<select value={qrGlobal.ecLevel} onChange={e=>setQrGlobal(q=>({...q,ecLevel:e.target.value as QrConfig['ecLevel']}))}>{['L','M','Q','H'].map(l=><option key={l} value={l}>{l}</option>)}</select></label><label>Size mm<input type="number" min="4" step="0.5" value={qrGlobal.sizeMm} onChange={e=>setQrGlobal(q=>({...q,sizeMm:Math.max(4,Number(e.target.value)||4)}))}/></label><label>Quiet modules<input type="number" min="0" step="1" value={qrGlobal.quietModules} onChange={e=>setQrGlobal(q=>({...q,quietModules:Math.max(0,Math.floor(Number(e.target.value)||0))}))}/></label><label>Hole edge bridge mm<input type="number" min="0" step="0.5" value={bridge} onChange={e=>setBridge(Math.max(0,Number(e.target.value)||0))}/></label></div><div className="bulk-match"><button onClick={()=>applyQrToAll(defaultQr({width:1,height:1},{text:qrGlobal.text,ecLevel:qrGlobal.ecLevel,sizeMm:qrGlobal.sizeMm,quietModules:qrGlobal.quietModules}))}>Add same QR to all enabled designs</button><button className="quiet-button" onClick={()=>setDesigns(old=>old.map(d=>({...d,qr:undefined})))}>Remove all QRs</button></div><small className="note">QRs are generated locally and stored per design; open a design's Holes/QR editor to position it. Apply-to-all overwrites each design's QR, centred.</small></section>
+        <BatchPanel designs={designs} selectedCount={selectedCount} img={img} setImg={setImg} qr={qr} setQr={setQr} bridge={bridge} setBridge={setBridge} csv={csv} onStage={file=>void stageCsv(file)} onCommit={commitCsv} onApplyImage={applyImageScope} onApplyQr={applyQrScope} onResetOverrides={resetOverrides} onRemoveAllQr={removeAllQr}/>
         <section className="export-panel"><div className="export-heading"><div><span className="eyebrow">PRODUCTION OUTPUT</span><h3>Export files</h3></div><div className="export-toggles"><label className="border-toggle"><input type="checkbox" checked={border} onChange={e=>setBorder(e.target.checked)}/>Sheet border on print</label></div></div><p>Print and cut are separate outputs from one geometry source: the print PDF carries artwork and QR only (never a cut line), while the cut PDF, SVG and DXF carry the true rotated contour plus keychain holes.</p><div className="job-row"><label>Job name<input value={jobName} placeholder="e.g. Store signage batch" onChange={e=>setJobName(e.target.value)}/></label><label>Material<input value={material} placeholder="e.g. 3 mm clear acrylic" onChange={e=>setMaterial(e.target.value)}/></label><button type="button" className="quiet-button" onClick={()=>void exportOne('report')}>↧ Job report</button></div><div className="export-buttons"><button onClick={()=>void exportOne('printpdf')}>▤ <span>Print PDF</span><small>Artwork + QR, no cut lines</small></button><button onClick={()=>void exportOne('cutpdf')}>✂ <span>Cut PDF</span><small>Black vector outlines + holes</small></button><button onClick={()=>void exportOne('svg')}>⌁ <span>Cutting SVG</span><small>One file per sheet</small></button><button onClick={()=>void exportOne('dxf')}>⌗ <span>Cutting DXF</span><small>CUT + HOLES layers</small></button><button onClick={()=>void exportOne('manifest')}>▦ <span>Manifest CSV</span><small>Piece-level positions</small></button><button onClick={()=>void exportOne('png')}>▧ <span>Preview PNG</span><small>Active sheet proof</small></button><button className="zip-export" onClick={()=>void exportOne('finals')}>⬒ <span>Final images ZIP</span><small>One PNG per finished piece</small></button><button className="zip-export" onClick={()=>void exportOne('zip')}>↓ <span>Production ZIP</span><small>All outputs, packaged</small></button></div><div className="export-footnote">*PDF artwork is browser-embedded RGB; a color-managed RIP conversion may still be required. Cut contours for circles and curves are polygon approximations. Always verify scale and seam in your cutter software at 100% before production.</div></section>
         <footer>BUILT FOR THE DETAILS THAT MATTER <span>•</span> LOCAL-FIRST PRODUCTION</footer>
       </section>

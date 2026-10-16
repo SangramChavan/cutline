@@ -18,6 +18,8 @@ export interface ExportOptions {
   dpi?: number
   marks?: boolean
   scaleMark?: boolean
+  // Crop each PDF page to the placed pieces (no blank sheet around them). Default true for PDFs.
+  trim?: boolean
   jobName?: string
   material?: string
   // Self-contained artwork for the SVG print layer: design id -> data: URL.
@@ -34,6 +36,15 @@ function piecePath(piece: Piece, design: Design) {
   return pointsToPath(piecePoints(piece, design))
 }
 
+// Page frame in mm: the whole sheet, or just the box around the placed pieces.
+function frameOf(pieces: Piece[], sheetW: number, sheetH: number, trim: boolean) {
+  if (!trim || !pieces.length) return { ox: 0, oy: 0, w: sheetW, h: sheetH }
+  const ox = Math.max(0, Math.min(...pieces.map(p => p.x))), oy = Math.max(0, Math.min(...pieces.map(p => p.y)))
+  return { ox, oy, w: Math.min(sheetW, Math.max(...pieces.map(p => p.x + p.width))) - ox, h: Math.min(sheetH, Math.max(...pieces.map(p => p.y + p.height))) - oy }
+}
+// Sheet-space points -> page-space points (offset by the frame, optionally flipped left-right).
+const toFrame = (f: { ox: number; oy: number; w: number }, mirror: boolean) => (pts: { x: number; y: number }[]) => pts.map(q => ({ x: mirror ? f.w - (q.x - f.ox) : q.x - f.ox, y: q.y - f.oy }))
+
 function flipX(src: HTMLCanvasElement): HTMLCanvasElement {
   const c = document.createElement('canvas')
   c.width = src.width; c.height = src.height
@@ -48,24 +59,27 @@ function holesOf(design: Design): Hole[] { return design.holes ?? [] }
 // Print-ready PDF: arranged artwork (with QR) at 1:1 page size. Cutting geometry
 // is NOT drawn here by default, so no red cut border can reach the print.
 export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { border = false, mirror = false, cut = false, cutColor = '#111111', cutWidthMm = 0.25, dpi = 300, marks = false, scaleMark = true, jobName, material } = options
-  const pageW = toMm(sheet.width, sheet.unit) * PT_PER_MM, pageH = toMm(sheet.height, sheet.unit) * PT_PER_MM
+  const { border = false, mirror = false, cut = false, cutColor = '#111111', cutWidthMm = 0.25, dpi = 300, marks = false, scaleMark = false, trim = true, jobName, material } = options
+  const sheetW = toMm(sheet.width, sheet.unit), sheetH = toMm(sheet.height, sheet.unit)
   const pdf = await PDFDocument.create()
   pdf.setTitle(jobName ? `${jobName} — Cutline print sheets` : 'Cutline print sheets')
   pdf.setProducer('Cutline — local-first production studio')
   if (jobName || material) pdf.setSubject([jobName, material].filter(Boolean).join(' · '))
   for (const pieces of layout.sheets) {
-    const page = pdf.addPage([pageW, pageH])
+    const f = frameOf(pieces, sheetW, sheetH, trim), pageH = f.h * PT_PER_MM
+    const page = pdf.addPage([f.w * PT_PER_MM, pageH])
+    const place = toFrame(f, mirror)
     for (const p of pieces) {
       const d = designs.find(v => v.id === p.designId)!
-      const x = (mirror ? pageW / PT_PER_MM - p.x - p.width : p.x) * PT_PER_MM, y = pageH - (p.y + p.height) * PT_PER_MM, w = p.width * PT_PER_MM, h = p.height * PT_PER_MM
+      const lx = p.x - f.ox
+      const x = (mirror ? f.w - lx - p.width : lx) * PT_PER_MM, y = pageH - (p.y - f.oy + p.height) * PT_PER_MM, w = p.width * PT_PER_MM, h = p.height * PT_PER_MM
       if (d.mime.startsWith('image/')) {
         const raster = mirror ? flipX(await renderPieceCanvas(d, p, dpi)) : await renderPieceCanvas(d, p, dpi)
         page.drawImage(await pdf.embedPng(await canvasToPng(raster)), { x, y, width: w, height: h })
       } else {
         page.drawText(`${d.name}\nArtwork: ${d.mime || 'unknown'}`, { x: x + 4, y: y + h / 2, size: 7, color: rgb(.25, .28, .3), maxWidth: w - 8 })
       }
-      if (cut) page.drawSvgPath(piecePath(p, d), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: hexToRgb(cutColor), borderWidth: cutWidthMm })
+      if (cut) page.drawSvgPath(pointsToPath(place(piecePoints(p, d))), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: hexToRgb(cutColor), borderWidth: cutWidthMm })
       if (border) page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(.1, .12, .15), borderWidth: .35 })
       if (marks) page.drawText(p.id.slice(-5), { x: x + 1, y: y + 1, size: 5, color: rgb(.55, .1, .2) })
     }
@@ -86,15 +100,16 @@ export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, 
 // Cutting-ready PDF: vector cut contours and hole paths only, no artwork. Black
 // hairline strokes on a true-size page, one page per sheet.
 export async function buildCutPdf(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { cutWidthMm = 0.1, jobName, mirror = false } = options
-  const pageW = toMm(sheet.width, sheet.unit) * PT_PER_MM, pageH = toMm(sheet.height, sheet.unit) * PT_PER_MM
-  // Mirrored outlines flip left-right across the sheet width, matching the mirrored print.
-  const path = (pts: { x: number; y: number }[]) => pointsToPath(mirror ? pts.map(q => ({ x: pageW / PT_PER_MM - q.x, y: q.y })) : pts)
+  const { cutWidthMm = 0.1, jobName, mirror = false, trim = true } = options
+  const sheetW = toMm(sheet.width, sheet.unit), sheetH = toMm(sheet.height, sheet.unit)
   const pdf = await PDFDocument.create()
   pdf.setTitle(jobName ? `${jobName} — Cutline cut paths${mirror ? ' (mirrored)' : ''}` : `Cutline cut paths${mirror ? ' (mirrored)' : ''}`)
   pdf.setProducer('Cutline — local-first production studio')
   for (const pieces of layout.sheets) {
-    const page = pdf.addPage([pageW, pageH])
+    // Same frame as the print PDF so the two files register exactly; mirrored outlines flip within it.
+    const f = frameOf(pieces, sheetW, sheetH, trim), pageH = f.h * PT_PER_MM
+    const page = pdf.addPage([f.w * PT_PER_MM, pageH])
+    const path = (pts: { x: number; y: number }[]) => pointsToPath(toFrame(f, mirror)(pts))
     for (const p of pieces) {
       const d = designs.find(v => v.id === p.designId)!
       page.drawSvgPath(path(piecePoints(p, d)), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: rgb(0, 0, 0), borderWidth: cutWidthMm })

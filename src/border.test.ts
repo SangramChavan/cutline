@@ -95,7 +95,7 @@ describe('mirrored outline pdf', () => {
   const firstMove = async (mirror: boolean) => {
     const { inflateSync } = await import('node:zlib')
     const layout = { sheets: [[{ id: 'a-1', designId: 'a', copy: 1, x: 10, y: 10, width: 30, height: 30, rotation: 0, sheet: 0, path: '' }]], unplaced: [], utilization: [0.1] }
-    const bytes = Buffer.from(await buildCutPdf([design()], layout, sheet, { mirror }))
+    const bytes = Buffer.from(await buildCutPdf([design()], layout, sheet, { mirror, trim: false }))
     const txt = bytes.toString('latin1'); const xs: number[] = []
     for (const m of txt.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) { try { for (const q of inflateSync(Buffer.from(m[1]!, 'latin1')).toString('latin1').matchAll(/(-?[\d.]+) (-?[\d.]+) m\b/g)) xs.push(+q[1]!) } catch { /* not a flate stream */ } }
     return xs.map(v => +v.toFixed(1))
@@ -104,5 +104,20 @@ describe('mirrored outline pdf', () => {
     const n = await firstMove(false), m = await firstMove(true)
     expect(n).toContain(10); expect(m).toContain(190)
     expect(m).not.toContain(10)
+  })
+})
+
+describe('PDF trim to artwork', () => {
+  const layout = { sheets: [[{ id: 'a-1', designId: 'a', copy: 1, x: 40, y: 20, width: 30, height: 30, rotation: 0, sheet: 0, path: '' }, { id: 'a-2', designId: 'a', copy: 2, x: 75, y: 20, width: 30, height: 30, rotation: 0, sheet: 0, path: '' }]], unplaced: [], utilization: [0.1] }
+  const pageSize = async (bytes: Uint8Array) => { const { PDFDocument } = await import('pdf-lib'); const { width, height } = (await PDFDocument.load(bytes)).getPage(0).getSize(); return [+(width / 2.834646).toFixed(1), +(height / 2.834646).toFixed(1)] }
+  it('crops outline pages to the placed pieces, or keeps the sheet when off', async () => {
+    expect(await pageSize(await buildCutPdf([design()], layout, sheet))).toEqual([65, 30])
+    expect(await pageSize(await buildCutPdf([design()], layout, sheet, { trim: false }))).toEqual([200, 150])
+    expect(await pageSize(await buildCutPdf([design()], layout, sheet, { mirror: true }))).toEqual([65, 30])
+  })
+  it('mirrors inside the trimmed frame (pieces 0..30 and 35..65 become 35..65 and 0..30)', async () => {
+    const { inflateSync } = await import('node:zlib')
+    const xs = async (mirror: boolean) => { const txt = Buffer.from(await buildCutPdf([design()], layout, sheet, { mirror })).toString('latin1'); const out: number[] = []; for (const m of txt.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) { try { for (const q of inflateSync(Buffer.from(m[1]!, 'latin1')).toString('latin1').matchAll(/(-?[\d.]+) (-?[\d.]+) m\b/g)) out.push(+(+q[1]!).toFixed(1)) } catch { /* not flate */ } } return out }
+    expect(await xs(false)).toEqual(expect.arrayContaining([0, 35])); expect(await xs(true)).toEqual(expect.arrayContaining([65, 30]))
   })
 })

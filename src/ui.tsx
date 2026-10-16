@@ -3,7 +3,7 @@ import JSZip from 'jszip'
 import { buildCutPdf, buildDxf, buildManifest, buildPdf, buildReport, buildSvg, makePng } from './export'
 import { canvasToPng, renderFinalCanvas } from './compose'
 import PieceEditor, { defaultQr } from './editor'
-import { fitSize, fromMm, marginsFromUsable, packBest, pathPoints, toMm, validatePolygon, validateUsableRect, type Design, type Layout, type QrConfig, type Shape, type Sheet } from './model'
+import { fitSize, fromMm, marginsFromUsable, packBest, pathPoints, piecePoints, polygonsOverlap, snapPosition, toMm, validatePolygon, validateUsableRect, type Design, type Layout, type QrConfig, type Shape, type Sheet } from './model'
 import { defaultMachineProfile, estimateCutting, formatDuration, suggestedProfiles, type MachineProfile } from './production'
 import BatchPanel, { type Scope } from './batch'
 import { matchCsv, readMappings, type ImportReport } from './csv'
@@ -295,7 +295,19 @@ export default function App(){
     const rect=canvasRef.current!.getBoundingClientRect(),scale=Math.min(rect.width/maxW,rect.height/maxH)*zoom
     const ml=toMm(effectiveSheet.marginLeft,effectiveSheet.unit),mt=toMm(effectiveSheet.marginTop,effectiveSheet.unit),mr=toMm(effectiveSheet.marginRight,effectiveSheet.unit),mb=toMm(effectiveSheet.marginBottom,effectiveSheet.unit)
     const startX=event.clientX,startY=event.clientY,ox=piece.x,oy=piece.y
-    const onMove=(e:PointerEvent)=>{const x=Math.max(ml,Math.min(maxW-piece.width-mr,ox+(e.clientX-startX)/scale)),y=Math.max(mt,Math.min(maxH-piece.height-mb,oy+(e.clientY-startY)/scale));setLayout(old=>({...old,sheets:old.sheets.map((group,idx)=>idx===activeSheet?group.map(p=>p.id===piece.id?{...p,x,y}:p):group)}))}
+    const clr=toMm(effectiveSheet.clearance,effectiveSheet.unit),thr=8/scale
+    const onMove=(e:PointerEvent)=>{
+      const rx=ox+(e.clientX-startX)/scale,ry=oy+(e.clientY-startY)/scale
+      setLayout(old=>{
+        const group=old.sheets[activeSheet]??[],others=group.filter(p=>p.id!==piece.id)
+        const s=snapPosition({x:rx,y:ry,width:piece.width,height:piece.height},others,{minX:ml,minY:mt,maxX:maxW-mr,maxY:maxH-mb},clr,thr)
+        const x=Math.max(ml,Math.min(maxW-piece.width-mr,s.x)),y=Math.max(mt,Math.min(maxH-piece.height-mb,s.y))
+        const moved=piecePoints({...piece,x,y},activeDesigns.get(piece.designId)!)
+        // Never drop onto a neighbour: hold the last legal spot instead.
+        if(others.some(o=>polygonsOverlap(moved,piecePoints(o,activeDesigns.get(o.designId)!),clr)))return old
+        return {...old,sheets:old.sheets.map((g,idx)=>idx===activeSheet?g.map(p=>p.id===piece.id?{...p,x,y}:p):g)}
+      })
+    }
     const onUp=()=>{window.removeEventListener('pointermove',onMove);window.removeEventListener('pointerup',onUp)}
     window.addEventListener('pointermove',onMove);window.addEventListener('pointerup',onUp)
   }

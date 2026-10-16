@@ -490,3 +490,21 @@ export async function packBest(designs: Design[], sheet: Sheet, angleOptions: nu
   }
   return best!
 }
+
+type Rect = { x: number; y: number; width: number; height: number }
+
+// Snap a dragged piece's bounding box to the usable-area edges and to its
+// neighbours' edges (flush, or leaving `clearance`), each axis independently,
+// within `threshold` mm. Only neighbours whose span overlaps on the other axis
+// count, so a piece never snaps to something it is not beside.
+export function snapPosition(p: Rect, others: Rect[], bounds: { minX: number; minY: number; maxX: number; maxY: number }, clearance: number, threshold: number): { x: number; y: number } {
+  const near = (lo: number, hi: number, olo: number, ohi: number) => lo < ohi + threshold + clearance && olo < hi + threshold + clearance
+  const pick = (v: number, targets: number[]) => { let best = v, d = threshold + 1e-9; for (const t of targets) if (Math.abs(t - v) < d) { best = t; d = Math.abs(t - v) } return best }
+  const xs = [bounds.minX, bounds.maxX - p.width], ys = [bounds.minY, bounds.maxY - p.height]
+  const xt = [...xs], yt = [...ys]
+  for (const o of others) {
+    if (near(p.y, p.y + p.height, o.y, o.y + o.height)) xt.push(o.x + o.width + clearance, o.x - clearance - p.width, o.x, o.x + o.width - p.width)
+    if (near(p.x, p.x + p.width, o.x, o.x + o.width)) yt.push(o.y + o.height + clearance, o.y - clearance - p.height, o.y, o.y + o.height - p.height)
+  }
+  return { x: pick(p.x, xt), y: pick(p.y, yt) }
+}

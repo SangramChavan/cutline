@@ -64,3 +64,18 @@ describe('border geometry', () => {
     expect(bbox(cutPoints(d0))).toEqual({ w: 30, h: 30 })
   })
 })
+
+describe('centred border alignment', () => {
+  it('grows the piece by half the border per side', () => {
+    expect(outerSize({ width: 30, height: 20, borderMm: 4, borderAlign: 'center' })).toEqual({ w: 34, h: 24, offset: 2 })
+    expect(outerSize({ width: 30, height: 20, borderMm: 4, borderAlign: 'outside' })).toEqual({ w: 38, h: 28, offset: 4 })
+  })
+  it('cut contour follows the half-grown outline and rounded radius grows by half', () => {
+    const d = design({ borderMm: 4, borderAlign: 'center', shape: 'rounded', radius: 6 })
+    expect(bbox(cutPoints(d))).toEqual({ w: 34, h: 34 })
+  })
+  it('fits more pieces than an outside border of the same thickness', async () => {
+    const n = async (a: 'outside' | 'center') => (await pack([design({ borderMm: 6, borderAlign: a })], sheet, [0, 90])).sheets[0]!.length
+    expect(await n('center')).toBeGreaterThan(await n('outside'))
+  })
+})

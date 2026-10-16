@@ -10,6 +10,8 @@ const PT_PER_MM = 72 / 25.4
 
 export interface ExportOptions {
   border?: boolean
+  // Flip the print left-right (for printing on the reverse side). Print PDF only; cut files are never mirrored.
+  mirror?: boolean
   cut?: boolean
   cutColor?: string
   cutWidthMm?: number
@@ -32,12 +34,21 @@ function piecePath(piece: Piece, design: Design) {
   return pointsToPath(piecePoints(piece, design))
 }
 
+function flipX(src: HTMLCanvasElement): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  c.width = src.width; c.height = src.height
+  const ctx = c.getContext('2d')!
+  ctx.translate(c.width, 0); ctx.scale(-1, 1)
+  ctx.drawImage(src, 0, 0)
+  return c
+}
+
 function holesOf(design: Design): Hole[] { return design.holes ?? [] }
 
 // Print-ready PDF: arranged artwork (with QR) at 1:1 page size. Cutting geometry
 // is NOT drawn here by default, so no red cut border can reach the print.
 export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { border = false, cut = false, cutColor = '#111111', cutWidthMm = 0.25, dpi = 300, marks = false, scaleMark = true, jobName, material } = options
+  const { border = false, mirror = false, cut = false, cutColor = '#111111', cutWidthMm = 0.25, dpi = 300, marks = false, scaleMark = true, jobName, material } = options
   const pageW = toMm(sheet.width, sheet.unit) * PT_PER_MM, pageH = toMm(sheet.height, sheet.unit) * PT_PER_MM
   const pdf = await PDFDocument.create()
   pdf.setTitle(jobName ? `${jobName} — Cutline print sheets` : 'Cutline print sheets')
@@ -47,9 +58,9 @@ export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, 
     const page = pdf.addPage([pageW, pageH])
     for (const p of pieces) {
       const d = designs.find(v => v.id === p.designId)!
-      const x = p.x * PT_PER_MM, y = pageH - (p.y + p.height) * PT_PER_MM, w = p.width * PT_PER_MM, h = p.height * PT_PER_MM
+      const x = (mirror ? pageW / PT_PER_MM - p.x - p.width : p.x) * PT_PER_MM, y = pageH - (p.y + p.height) * PT_PER_MM, w = p.width * PT_PER_MM, h = p.height * PT_PER_MM
       if (d.mime.startsWith('image/')) {
-        const raster = await renderPieceCanvas(d, p, dpi)
+        const raster = mirror ? flipX(await renderPieceCanvas(d, p, dpi)) : await renderPieceCanvas(d, p, dpi)
         page.drawImage(await pdf.embedPng(await canvasToPng(raster)), { x, y, width: w, height: h })
       } else {
         page.drawText(`${d.name}\nArtwork: ${d.mime || 'unknown'}`, { x: x + 4, y: y + h / 2, size: 7, color: rgb(.25, .28, .3), maxWidth: w - 8 })

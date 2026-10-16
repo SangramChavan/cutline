@@ -50,9 +50,9 @@ export const sanitizeBorderColor = (v: unknown): string => (typeof v === 'string
 export const sanitizeBorder = <T extends Partial<Pick<Design, 'borderMm' | 'borderColor'>>>(d: T): T & Pick<Design, 'borderMm' | 'borderColor'> => ({ ...d, borderMm: sanitizeBorderMm(d.borderMm), borderColor: sanitizeBorderColor(d.borderColor) })
 
 // Border-only apply (the border panel's own "Apply to selected / all").
-export function applyBorderToTargets(designs: Design[], ids: Set<string> | null, mm: number, color: string): Design[] {
-  const borderMm = sanitizeBorderMm(mm), borderColor = sanitizeBorderColor(color)
-  return designs.map(d => (ids === null || ids.has(d.id)) ? { ...d, borderMm, borderColor } : d)
+export function applyBorderToTargets(designs: Design[], ids: Set<string> | null, mm: number, color: string, align: 'outside' | 'center' = 'outside'): Design[] {
+  const borderMm = sanitizeBorderMm(mm), borderColor = sanitizeBorderColor(color), borderAlign = align === 'center' ? 'center' : 'outside'
+  return designs.map(d => (ids === null || ids.has(d.id)) ? { ...d, borderMm, borderColor, borderAlign } : d)
 }
 
 export function applyImageSettings(d: Design, g: GlobalImageSettings): Design {

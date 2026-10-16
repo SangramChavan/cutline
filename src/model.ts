@@ -65,6 +65,8 @@ export interface Design {
   // Border placed OUTSIDE the artwork, in mm (0 = off, clamped 0..50) and its colour.
   borderMm: number
   borderColor: string
+  // 'outside' (default): band sits wholly outside the artwork. 'center': band straddles the artwork edge.
+  borderAlign?: 'outside' | 'center'
 }
 
 export const MAX_BORDER_MM = 50
@@ -74,8 +76,11 @@ export const normalizeBorderColor = (v: unknown): string => typeof v === 'string
 
 // Size of the finished piece including its border. `offset` maps artwork-local
 // mm into outer-local mm. Nesting, cutting and estimates all use this.
-export function outerSize(d: Pick<Design, 'width' | 'height'> & { borderMm?: number }) {
-  const offset = clampBorder(d.borderMm)
+// How far the piece grows past the artwork edge: the full border, or half when centred on the edge.
+export const borderOut = (d: { borderMm?: number; borderAlign?: string }): number => clampBorder(d.borderMm) * (d.borderAlign === 'center' ? 0.5 : 1)
+
+export function outerSize(d: Pick<Design, 'width' | 'height'> & { borderMm?: number; borderAlign?: string }) {
+  const offset = borderOut(d)
   return { w: d.width + 2 * offset, h: d.height + 2 * offset, offset }
 }
 
@@ -169,7 +174,7 @@ export function shapePath(d: Pick<Design, 'shape' | 'width' | 'height' | 'radius
   return `M 0 0 H ${w} V ${h} H 0 Z`
 }
 
-type ShapeSrc = Pick<Design, 'shape' | 'width' | 'height' | 'radius' | 'points' | 'svgPath'> & { borderMm?: number }
+type ShapeSrc = Pick<Design, 'shape' | 'width' | 'height' | 'radius' | 'points' | 'svgPath'> & { borderMm?: number; borderAlign?: string }
 
 // Miter-offset a polygon outward by b (miter length capped), re-anchored so the
 // result keeps the same origin convention (bbox min stays where it was).
@@ -190,7 +195,7 @@ function offsetPolygon(pts: Point[], b: number): Point[] {
 // The cut shape: the artwork shape grown by borderMm on every side. With no
 // border it is the design itself, so output is identical to before.
 export function outerShape(d: ShapeSrc): ShapeSrc {
-  const b = clampBorder(d.borderMm)
+  const b = borderOut(d)
   if (!b) return d
   const { w, h } = outerSize(d)
   if ((d.shape === 'polygon' && d.points?.length) || (d.shape === 'svg' && d.svgPath)) {
@@ -319,7 +324,7 @@ export function holeClearance(hole: Hole, design: Design): number {
 }
 
 // Preset hole placements, in design-local mm.
-export function holePreset(preset: 'top-centre' | 'top-left' | 'top-right' | 'two-top' | 'centre', design: Pick<Design, 'width' | 'height'> & { borderMm?: number }, diameter: number, edgeGap = 4): Hole[] {
+export function holePreset(preset: 'top-centre' | 'top-left' | 'top-right' | 'two-top' | 'centre', design: Pick<Design, 'width' | 'height'> & { borderMm?: number; borderAlign?: string }, diameter: number, edgeGap = 4): Hole[] {
   // Edge gap is measured from the OUTER edge; coordinates stay artwork-local (may be negative inside the border).
   const o = outerSize(design).offset
   const r = diameter / 2, g = edgeGap

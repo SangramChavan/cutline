@@ -20,20 +20,26 @@ export async function drawComposition(ctx: CanvasRenderingContext2D, d: Design, 
   ctx.save()
   ctx.rotate(rotation * Math.PI / 180)
   const contour = pathPoints(d)
-  ctx.beginPath()
-  contour.forEach((pt, i) => { const X = (pt.x - d.width / 2) * scale, Y = (pt.y - d.height / 2) * scale; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y) })
-  ctx.closePath()
-  if (d.borderMm > 0) {
+  const trace = () => {
+    ctx.beginPath()
+    contour.forEach((pt, i) => { const X = (pt.x - d.width / 2) * scale, Y = (pt.y - d.height / 2) * scale; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y) })
+    ctx.closePath()
+  }
+  const centred = d.borderAlign === 'center'
+  const sharp = d.shape === 'rectangle' || d.shape === 'square' || d.shape === 'polygon' || d.shape === 'svg'
+  trace()
+  if (d.borderMm > 0 && !centred) {
     // Border band outside the artwork: fill + a stroke 2*border wide (outer edge
     // = contour offset by border; round joins give radius + border on curves).
     ctx.save()
     ctx.fillStyle = ctx.strokeStyle = d.borderColor || '#000000'
     ctx.lineWidth = 2 * d.borderMm * scale
-    ctx.lineJoin = d.shape === 'rectangle' || d.shape === 'square' || d.shape === 'polygon' || d.shape === 'svg' ? 'miter' : 'round'
+    ctx.lineJoin = sharp ? 'miter' : 'round'
     ctx.miterLimit = 10
     ctx.fill(); ctx.stroke()
     ctx.restore()
   }
+  ctx.save()
   ctx.clip()
   if (image && image.naturalWidth) {
     const fit = Math.min(d.width * scale / image.naturalWidth, d.height * scale / image.naturalHeight)
@@ -59,6 +65,17 @@ export async function drawComposition(ctx: CanvasRenderingContext2D, d: Design, 
       ctx.fillStyle = qr.dark || '#000000'
       for (let row = 0; row < m.size; row++) for (let col = 0; col < m.size; col++) if (m.get(col, row)) ctx.fillRect((col + qr.quietModules) * cell, (row + qr.quietModules) * cell, cell + 0.5, cell + 0.5)
     }
+    ctx.restore()
+  }
+  ctx.restore()
+  if (d.borderMm > 0 && centred) {
+    // Band straddles the artwork edge: drawn over the art, half inside, half outside.
+    ctx.save()
+    ctx.strokeStyle = d.borderColor || '#000000'
+    ctx.lineWidth = d.borderMm * scale
+    ctx.lineJoin = sharp ? 'miter' : 'round'
+    ctx.miterLimit = 10
+    trace(); ctx.stroke()
     ctx.restore()
   }
   ctx.restore()

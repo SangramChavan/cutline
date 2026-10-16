@@ -38,7 +38,7 @@ npm test         # vitest acceptance suite
    (sheet price, cut speed, cut rate, pierce time are editable).
 7. **Export** — Print PDF (one page per sheet at the exact mm size, artwork at
    print DPI **plus a vector cut layer**: true scaled contour paths at 0.25 mm
-   in the selected cut color), Outline SVG (`#print-artwork` and `#cut` layers) and Mirror outline,
+   in the selected cut color), Outline PDF (vector cut outline + holes) and Mirror outline,
    Cutting **DXF** (mm units, `CUT` layer), Manifest CSV, Preview PNG, or a ZIP
    containing all of them.
 

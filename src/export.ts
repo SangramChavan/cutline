@@ -86,17 +86,19 @@ export async function buildPdf(designs: Design[], layout: Layout, sheet: Sheet, 
 // Cutting-ready PDF: vector cut contours and hole paths only, no artwork. Black
 // hairline strokes on a true-size page, one page per sheet.
 export async function buildCutPdf(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { cutWidthMm = 0.1, jobName } = options
+  const { cutWidthMm = 0.1, jobName, mirror = false } = options
   const pageW = toMm(sheet.width, sheet.unit) * PT_PER_MM, pageH = toMm(sheet.height, sheet.unit) * PT_PER_MM
+  // Mirrored outlines flip left-right across the sheet width, matching the mirrored print.
+  const path = (pts: { x: number; y: number }[]) => pointsToPath(mirror ? pts.map(q => ({ x: pageW / PT_PER_MM - q.x, y: q.y })) : pts)
   const pdf = await PDFDocument.create()
-  pdf.setTitle(jobName ? `${jobName} — Cutline cut paths` : 'Cutline cut paths')
+  pdf.setTitle(jobName ? `${jobName} — Cutline cut paths${mirror ? ' (mirrored)' : ''}` : `Cutline cut paths${mirror ? ' (mirrored)' : ''}`)
   pdf.setProducer('Cutline — local-first production studio')
   for (const pieces of layout.sheets) {
     const page = pdf.addPage([pageW, pageH])
     for (const p of pieces) {
       const d = designs.find(v => v.id === p.designId)!
-      page.drawSvgPath(piecePath(p, d), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: rgb(0, 0, 0), borderWidth: cutWidthMm })
-      for (const h of holesOf(d)) page.drawSvgPath(pointsToPath(holeSheetPolygon(h, p, d, 48)), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: rgb(0, 0, 0), borderWidth: cutWidthMm })
+      page.drawSvgPath(path(piecePoints(p, d)), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: rgb(0, 0, 0), borderWidth: cutWidthMm })
+      for (const h of holesOf(d)) page.drawSvgPath(path(holeSheetPolygon(h, p, d, 48)), { x: 0, y: pageH, scale: PT_PER_MM, borderColor: rgb(0, 0, 0), borderWidth: cutWidthMm })
     }
   }
   return new Uint8Array(await pdf.save())

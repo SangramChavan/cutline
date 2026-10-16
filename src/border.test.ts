@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDxf, buildManifest, buildSvg, cutContours } from './export'
+import { buildCutPdf, buildDxf, buildManifest, buildSvg, cutContours } from './export'
 import { clampBorder, cutPoints, holeClearance, holeError, holePreset, normalizeBorderColor, outerSize, pack, piecePoints, polygonArea, polygonsOverlap, usableBounds, type Design, type Sheet } from './model'
 import { summarize } from './production'
 
@@ -88,5 +88,21 @@ describe('mirrored outline svg', () => {
     expect(flipped).toContain('transform="translate(200 0) scale(-1 1)"')
     expect(flipped.indexOf('id="print-artwork"')).toBeGreaterThan(flipped.indexOf('scale(-1 1)'))
     expect(flipped.indexOf('id="cut"')).toBeGreaterThan(flipped.indexOf('scale(-1 1)'))
+  })
+})
+
+describe('mirrored outline pdf', () => {
+  const firstMove = async (mirror: boolean) => {
+    const { inflateSync } = await import('node:zlib')
+    const layout = { sheets: [[{ id: 'a-1', designId: 'a', copy: 1, x: 10, y: 10, width: 30, height: 30, rotation: 0, sheet: 0, path: '' }]], unplaced: [], utilization: [0.1] }
+    const bytes = Buffer.from(await buildCutPdf([design()], layout, sheet, { mirror }))
+    const txt = bytes.toString('latin1'); const xs: number[] = []
+    for (const m of txt.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) { try { for (const q of inflateSync(Buffer.from(m[1]!, 'latin1')).toString('latin1').matchAll(/(-?[\d.]+) (-?[\d.]+) m\b/g)) xs.push(+q[1]!) } catch { /* not a flate stream */ } }
+    return xs.map(v => +v.toFixed(1))
+  }
+  it('flips outline x across the sheet width (10..40 -> 160..190 on a 200 mm sheet)', async () => {
+    const n = await firstMove(false), m = await firstMove(true)
+    expect(n).toContain(10); expect(m).toContain(190)
+    expect(m).not.toContain(10)
   })
 })

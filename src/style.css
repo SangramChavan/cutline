@@ -101,3 +101,5 @@
 .batch-block .note{margin-top:6px}
 
 .border-color{width:100%;min-height:44px;padding:2px;cursor:pointer}
+
+.icon-button.active{background:#1f3a2e;color:#fff;border-color:#1f3a2e}

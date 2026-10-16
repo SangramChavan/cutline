@@ -5,7 +5,7 @@ import { buildReport, buildSvg } from './export'
 import { fitSize, marginsFromUsable, pack, packBest, pathPoints, polygonArea, toMm, usableBounds, validateUsableRect, type Design, type Sheet } from './model'
 
 const sheet: Sheet = { width: 300, height: 200, unit: 'mm', marginTop: 5, marginRight: 5, marginBottom: 5, marginLeft: 5, clearance: 0 }
-function design(overrides: Partial<Design> = {}): Design { return { id: 'a1', name: 'qr.png', path: 'batch/qr.png', url: 'data:image/png;base64,AAAA', mime: 'image/png', imageWidth: 300, imageHeight: 300, width: 40, height: 40, quantity: 1, shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected: false, ...overrides } }
+function design(overrides: Partial<Design> = {}): Design { return { id: 'a1', name: 'qr.png', path: 'batch/qr.png', url: 'data:image/png;base64,AAAA', mime: 'image/png', imageWidth: 300, imageHeight: 300, width: 40, height: 40, quantity: 1, shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected:false,borderMm:0,borderColor:'#000000',...overrides } }
 
 describe('unit & geometry helpers', () => {
   it('converts imperial sheet sizes exactly (2 ft = 609.6 mm)', () => {

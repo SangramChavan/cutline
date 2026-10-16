@@ -7,7 +7,7 @@ import { defaultMachineProfile, estimateCutting } from './production'
 const sheet:Sheet={width:300,height:200,unit:'mm',marginTop:5,marginRight:5,marginBottom:5,marginLeft:5,clearance:0}
 const hole=(x=20,y=20)=>({id:'h',diameter:4,x,y})
 const qr=(over:Partial<QrConfig>={}):QrConfig=>({enabled:true,source:'generated',text:'CUTLINE',ecLevel:'M',sizeMm:16,x:12,y:12,quietModules:4,rotation:0,dark:'#000000',light:'#ffffff',...over})
-function design(overrides:Partial<Design>={}):Design{return{id:'a1',name:'qr.png',path:'batch/qr.png',url:'data:image/png;base64,AAAA',mime:'image/png',imageWidth:300,imageHeight:300,width:40,height:40,quantity:2,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,...overrides}}
+function design(overrides:Partial<Design>={}):Design{return{id:'a1',name:'qr.png',path:'batch/qr.png',url:'data:image/png;base64,AAAA',mime:'image/png',imageWidth:300,imageHeight:300,width:40,height:40,quantity:2,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,borderMm:0,borderColor:'#000000',...overrides}}
 
 describe('keychain holes',()=>{
   it('validates a hole against the true contour, not just the bounding box',()=>{

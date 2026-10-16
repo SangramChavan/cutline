@@ -43,6 +43,18 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), h
 const TOL = 0.5
 const near = (a: number, b: number) => Math.abs(a - b) < TOL
 
+export const MAX_BORDER_MM = 50
+export const sanitizeBorderMm = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? clamp(n, 0, MAX_BORDER_MM) : 0 }
+export const sanitizeBorderColor = (v: unknown): string => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : '#000000')
+// Fill defaults / clamp the border fields of a design loaded from an older save.
+export const sanitizeBorder = <T extends Partial<Pick<Design, 'borderMm' | 'borderColor'>>>(d: T): T & Pick<Design, 'borderMm' | 'borderColor'> => ({ ...d, borderMm: sanitizeBorderMm(d.borderMm), borderColor: sanitizeBorderColor(d.borderColor) })
+
+// Border-only apply (the border panel's own "Apply to selected / all").
+export function applyBorderToTargets(designs: Design[], ids: Set<string> | null, mm: number, color: string): Design[] {
+  const borderMm = sanitizeBorderMm(mm), borderColor = sanitizeBorderColor(color)
+  return designs.map(d => (ids === null || ids.has(d.id)) ? { ...d, borderMm, borderColor } : d)
+}
+
 export function applyImageSettings(d: Design, g: GlobalImageSettings): Design {
   const out: Design = { ...d }
 

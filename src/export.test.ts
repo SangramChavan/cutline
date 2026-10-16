@@ -3,7 +3,7 @@ import { buildDxf, buildManifest, buildSvg } from './export'
 import { pack, piecePoints, type Design, type Sheet } from './model'
 
 const sheet:Sheet={width:300,height:200,unit:'mm',marginTop:5,marginRight:5,marginBottom:5,marginLeft:5,clearance:0}
-function design(overrides:Partial<Design>={}):Design{return{id:'a1',name:'qr.png',path:'batch/qr.png',url:'data:image/png;base64,AAAA',mime:'image/png',imageWidth:300,imageHeight:300,width:40,height:40,quantity:2,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,...overrides}}
+function design(overrides:Partial<Design>={}):Design{return{id:'a1',name:'qr.png',path:'batch/qr.png',url:'data:image/png;base64,AAAA',mime:'image/png',imageWidth:300,imageHeight:300,width:40,height:40,quantity:2,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,borderMm:0,borderColor:'#000000',...overrides}}
 
 describe('export layers match layout',()=>{
   it('emits one SVG per sheet at the exact configured physical size',async()=>{

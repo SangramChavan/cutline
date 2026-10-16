@@ -62,7 +62,23 @@ export interface Design {
   qr?: QrConfig
   // Minimum material bridge kept between a hole and the external edge, in mm.
   bridgeMm?: number
+  // Border placed OUTSIDE the artwork, in mm (0 = off, clamped 0..50) and its colour.
+  borderMm: number
+  borderColor: string
 }
+
+export const MAX_BORDER_MM = 50
+export const DEFAULT_BORDER_COLOR = '#000000'
+export const clampBorder = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) ? Math.min(MAX_BORDER_MM, Math.max(0, v)) : 0
+export const normalizeBorderColor = (v: unknown): string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : DEFAULT_BORDER_COLOR
+
+// Size of the finished piece including its border. `offset` maps artwork-local
+// mm into outer-local mm. Nesting, cutting and estimates all use this.
+export function outerSize(d: Pick<Design, 'width' | 'height'> & { borderMm?: number }) {
+  const offset = clampBorder(d.borderMm)
+  return { w: d.width + 2 * offset, h: d.height + 2 * offset, offset }
+}
+
 
 export interface Sheet {
   width: number
@@ -153,6 +169,41 @@ export function shapePath(d: Pick<Design, 'shape' | 'width' | 'height' | 'radius
   return `M 0 0 H ${w} V ${h} H 0 Z`
 }
 
+type ShapeSrc = Pick<Design, 'shape' | 'width' | 'height' | 'radius' | 'points' | 'svgPath'> & { borderMm?: number }
+
+// Miter-offset a polygon outward by b (miter length capped), re-anchored so the
+// result keeps the same origin convention (bbox min stays where it was).
+function offsetPolygon(pts: Point[], b: number): Point[] {
+  const n = pts.length
+  let area = 0
+  for (let i = 0; i < n; i++) { const a = pts[i]!, c = pts[(i + 1) % n]!; area += a.x * c.y - c.x * a.y }
+  const sign = area >= 0 ? 1 : -1 // outward normal of edge (dx,dy) is (dy,-dx)*sign
+  const norm = (a: Point, c: Point) => { const dx = c.x - a.x, dy = c.y - a.y, l = Math.hypot(dx, dy) || 1; return { x: dy / l * sign, y: -dx / l * sign } }
+  return pts.map((p, i) => {
+    const n1 = norm(pts[(i + n - 1) % n]!, p), n2 = norm(p, pts[(i + 1) % n]!)
+    const mx = n1.x + n2.x, my = n1.y + n2.y, k = 1 + n1.x * n2.x + n1.y * n2.y
+    const scale = b / Math.max(k, 0.25) // cap miter at 2x b
+    return { x: p.x + mx * scale + b, y: p.y + my * scale + b }
+  })
+}
+
+// The cut shape: the artwork shape grown by borderMm on every side. With no
+// border it is the design itself, so output is identical to before.
+export function outerShape(d: ShapeSrc): ShapeSrc {
+  const b = clampBorder(d.borderMm)
+  if (!b) return d
+  const { w, h } = outerSize(d)
+  if ((d.shape === 'polygon' && d.points?.length) || (d.shape === 'svg' && d.svgPath)) {
+    const pts = pathPoints(d)
+    if (pts.length >= 3) return { shape: 'polygon', width: w, height: h, radius: 0, points: offsetPolygon(pts, b) }
+  }
+  const radius = d.shape === 'rounded' ? Math.min(d.radius, d.width / 2, d.height / 2) + b : d.radius
+  return { shape: d.shape === 'svg' || d.shape === 'polygon' ? 'rectangle' : d.shape, width: w, height: h, radius, points: undefined, svgPath: undefined }
+}
+
+// Outer cut contour in outer-local mm (top-left origin).
+export const cutPoints = (d: ShapeSrc): Point[] => pathPoints(outerShape(d))
+
 export function pathPoints(d: Pick<Design, 'shape' | 'width' | 'height' | 'radius' | 'points' | 'svgPath'>, steps = 32): Point[] {
   if (d.shape === 'circle' || d.shape === 'ellipse') return Array.from({ length: steps }, (_, i) => ({ x: d.width / 2 + d.width / 2 * Math.cos(i * Math.PI * 2 / steps), y: d.height / 2 + d.height / 2 * Math.sin(i * Math.PI * 2 / steps) }))
   if (d.shape === 'polygon' && d.points?.length) return d.points
@@ -200,7 +251,7 @@ export function translatePoints(points: Point[], dx: number, dy: number): Point[
 // Single source of truth for a placed copy's real cutting contour: design outline
 // rotated by the copy angle, then translated so its bounding box sits at (piece.x,piece.y).
 export function piecePoints(piece: Pick<Piece, 'x' | 'y' | 'rotation' | 'width' | 'height'>, design: Design): Point[] {
-  const rotated = rotatePoints(pathPoints(design), piece.rotation)
+  const rotated = rotatePoints(cutPoints(design), piece.rotation)
   const box = boundsOf(rotated)
   return translatePoints(rotated, piece.x - box.minX, piece.y - box.minY)
 }
@@ -222,7 +273,9 @@ export function circlePoints(cx: number, cy: number, diameter: number, steps = 4
 // what keeps a hole or QR aligned with the artwork after nesting rotates it.
 export function localToSheet(local: Point, piece: Pick<Piece, 'x' | 'y' | 'rotation'>, design: Design): Point {
   const r = piece.rotation * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r)
-  const raw = pathPoints(design).map(p => ({ x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos }))
+  const { offset } = outerSize(design)
+  local = { x: local.x + offset, y: local.y + offset }
+  const raw = cutPoints(design).map(p => ({ x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos }))
   const minX = Math.min(0, ...raw.map(p => p.x)), minY = Math.min(0, ...raw.map(p => p.y))
   return { x: local.x * cos - local.y * sin - minX + piece.x, y: local.x * sin + local.y * cos - minY + piece.y }
 }
@@ -251,8 +304,9 @@ export function pointInContour(p: Point, poly: Point[]): boolean { return pointI
 // material left between the hole edge and the nearest external edge.
 export function holeError(hole: Hole, design: Design, bridgeMm = 1): string | null {
   if (!(hole.diameter > 0)) return 'Hole diameter must be greater than zero.'
-  const contour = pathPoints(design)
-  const centre = { x: hole.x, y: hole.y }
+  const contour = cutPoints(design)
+  const { offset } = outerSize(design)
+  const centre = { x: hole.x + offset, y: hole.y + offset }
   if (!pointInContour(centre, contour)) return 'Hole centre is outside the part outline.'
   const clearance = minDistanceToContour(centre, contour) - hole.diameter / 2
   if (clearance < bridgeMm - 1e-6) return `Hole is ${clearance.toFixed(2)} mm from the edge; a ${bridgeMm.toFixed(2)} mm material bridge is required.`
@@ -260,16 +314,19 @@ export function holeError(hole: Hole, design: Design, bridgeMm = 1): string | nu
 }
 
 export function holeClearance(hole: Hole, design: Design): number {
-  return minDistanceToContour({ x: hole.x, y: hole.y }, pathPoints(design)) - hole.diameter / 2
+  const { offset } = outerSize(design)
+  return minDistanceToContour({ x: hole.x + offset, y: hole.y + offset }, cutPoints(design)) - hole.diameter / 2
 }
 
 // Preset hole placements, in design-local mm.
-export function holePreset(preset: 'top-centre' | 'top-left' | 'top-right' | 'two-top' | 'centre', design: Pick<Design, 'width' | 'height'>, diameter: number, edgeGap = 4): Hole[] {
+export function holePreset(preset: 'top-centre' | 'top-left' | 'top-right' | 'two-top' | 'centre', design: Pick<Design, 'width' | 'height'> & { borderMm?: number }, diameter: number, edgeGap = 4): Hole[] {
+  // Edge gap is measured from the OUTER edge; coordinates stay artwork-local (may be negative inside the border).
+  const o = outerSize(design).offset
   const r = diameter / 2, g = edgeGap
-  const cx = design.width / 2, cy = g + r
-  if (preset === 'top-left') return [{ id: 'h', diameter, x: g + r, y: cy }]
-  if (preset === 'top-right') return [{ id: 'h', diameter, x: design.width - g - r, y: cy }]
-  if (preset === 'two-top') return [{ id: 'h1', diameter, x: design.width * 0.25, y: cy }, { id: 'h2', diameter, x: design.width * 0.75, y: cy }]
+  const cx = design.width / 2, cy = g + r - o
+  if (preset === 'top-left') return [{ id: 'h', diameter, x: g + r - o, y: cy }]
+  if (preset === 'top-right') return [{ id: 'h', diameter, x: design.width + o - g - r, y: cy }]
+  if (preset === 'two-top') return [{ id: 'h1', diameter, x: design.width * 0.25 - o / 2, y: cy }, { id: 'h2', diameter, x: design.width * 0.75 + o / 2, y: cy }]
   if (preset === 'centre') return [{ id: 'h', diameter, x: cx, y: design.height / 2 }]
   return [{ id: 'h', diameter, x: cx, y: cy }]
 }
@@ -319,13 +376,15 @@ function segmentDistance(a:Point,b:Point,c:Point,d:Point){
   return Math.min(pointLine(a,c,d),pointLine(b,c,d),pointLine(c,a,b),pointLine(d,a,b))
 }
 
+const outerArea = (d: Design) => { const o = outerSize(d); return o.w * o.h }
+
 export async function pack(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity, compare?: (a: Design, b: Design) => number): Promise<Layout> {
   const unit = sheet.unit
   const width=toMm(sheet.width,unit), height=toMm(sheet.height,unit)
   const m=[sheet.marginTop,sheet.marginRight,sheet.marginBottom,sheet.marginLeft].map(v=>toMm(v,unit))
   const usableW=Math.max(0,width-m[3]-m[1]), usableH=Math.max(0,height-m[0]-m[2]), usableArea=usableW*usableH
   const clearance=toMm(sheet.clearance,unit)
-  const items=designs.filter(d=>d.enabled).flatMap(d=>Array.from({length:Math.max(0,Math.floor(d.quantity))},(_,i)=>({d,copy:i+1}))).sort((a,b)=>compare?compare(a.d,b.d):b.d.width*b.d.height-a.d.width*a.d.height)
+  const items=designs.filter(d=>d.enabled).flatMap(d=>Array.from({length:Math.max(0,Math.floor(d.quantity))},(_,i)=>({d,copy:i+1}))).sort((a,b)=>compare?compare(a.d,b.d):outerArea(b.d)-outerArea(a.d))
   const sheets:Piece[][]=[[]], unplaced:Piece[]=[]
   const bounds=(pts:Point[])=>({minX:Math.min(...pts.map(p=>p.x)),maxX:Math.max(...pts.map(p=>p.x)),minY:Math.min(...pts.map(p=>p.y)),maxY:Math.max(...pts.map(p=>p.y))})
   type Box={minX:number,maxX:number,minY:number,maxY:number}
@@ -379,7 +438,7 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
   }
   const place=(si:number,spot:{x:number,y:number;angle:number;pts:Point[];box:Box;w:number;h:number},d:Design,copy:number)=>{
     const id=`${d.id}-${copy}`
-    const piece:Piece={id,designId:d.id,copy,x:spot.x,y:spot.y,width:spot.w,height:spot.h,rotation:spot.angle,sheet:si,path:shapePath(d)}
+    const piece:Piece={id,designId:d.id,copy,x:spot.x,y:spot.y,width:spot.w,height:spot.h,rotation:spot.angle,sheet:si,path:shapePath(outerShape(d))}
     sheets[si]!.push(piece)
     placedAt.set(id,{pts:spot.pts,box:spot.box})
     addCand(si,piece.x+piece.width+clearance,piece.y)
@@ -387,7 +446,7 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
     addCand(si,piece.x+piece.width+clearance,piece.y+piece.height+clearance)
   }
   for(const {d,copy} of items){
-    const opts=validAngles(d).map(angle=>{const rp=rotatePoints(pathPoints(d),angle),b=bounds(rp);return{angle,pts:rp.map(p=>({x:p.x-b.minX,y:p.y-b.minY})),w:b.maxX-b.minX,h:b.maxY-b.minY}})
+    const opts=validAngles(d).map(angle=>{const rp=rotatePoints(cutPoints(d),angle),b=bounds(rp);return{angle,pts:rp.map(p=>({x:p.x-b.minX,y:p.y-b.minY})),w:b.maxX-b.minX,h:b.maxY-b.minY}})
     let spot=null, onSheet=-1
     for(let si=0;si<sheets.length&&!spot;si++){ ensure(si); const found=findSpot(si,opts); if(found){spot=found;onSheet=si} }
     if(!spot){
@@ -399,23 +458,23 @@ export async function pack(designs: Design[], sheet: Sheet, angleOptions: number
         spot={x:m[3],y:m[0],angle:smallest.angle,pts:smallest.pts.map(p=>({x:p.x+m[3],y:p.y+m[0]})),box:{minX:m[3],maxX:m[3]+smallest.w,minY:m[0],maxY:m[0]+smallest.h},w:smallest.w,h:smallest.h}
       }
     }
-    if(spot){ place(onSheet,spot,d,copy) } else unplaced.push({id:`${d.id}-${copy}`,designId:d.id,copy,x:0,y:0,width:d.width,height:d.height,rotation:0,sheet:0,path:shapePath(d)})
+    if(spot){ place(onSheet,spot,d,copy) } else unplaced.push({id:`${d.id}-${copy}`,designId:d.id,copy,x:0,y:0,width:outerSize(d).w,height:outerSize(d).h,rotation:0,sheet:0,path:shapePath(outerShape(d))})
   }
   while(sheets.length>1&&!sheets.at(-1)!.length) sheets.pop()
   if(sheets.length===1&&!sheets[0]!.length) sheets.pop()
   // Utilization is true contour area over the *usable* area, so circles and
   // other non-rectangular parts are not flattered by their bounding box.
   const denom=usableArea>0?usableArea:(width*height)||1
-  return {sheets,unplaced,utilization:sheets.map(group=>group.reduce((sum,p)=>{const d=designs.find(v=>v.id===p.designId)!; return sum+polygonArea(pathPoints(d))},0)/denom*100)}
+  return {sheets,unplaced,utilization:sheets.map(group=>group.reduce((sum,p)=>{const d=designs.find(v=>v.id===p.designId)!; return sum+polygonArea(cutPoints(d))},0)/denom*100)}
 }
 
 // Try several placement orderings and keep the best valid result within a time
 // budget. Deterministic: the same inputs always yield the same chosen layout.
 export async function packBest(designs: Design[], sheet: Sheet, angleOptions: number[] = [0, 90], maxSheets = Infinity, budgetMs = 1500): Promise<Layout> {
   const strategies: ((a: Design, b: Design) => number)[] = [
-    (a, b) => b.width * b.height - a.width * a.height || b.height - a.height,
-    (a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height),
-    (a, b) => b.height - a.height || b.width - a.width,
+    (a, b) => outerArea(b) - outerArea(a) || outerSize(b).h - outerSize(a).h,
+    (a, b) => Math.max(outerSize(b).w, outerSize(b).h) - Math.max(outerSize(a).w, outerSize(a).h),
+    (a, b) => outerSize(b).h - outerSize(a).h || outerSize(b).w - outerSize(a).w,
   ]
   const better = (a: Layout, b: Layout) => {
     if (a.unplaced.length !== b.unplaced.length) return a.unplaced.length < b.unplaced.length

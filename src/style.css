@@ -99,3 +99,5 @@
 .csv-table th{position:sticky;top:0;background:#f3f0e9;color:#6e7169;letter-spacing:.06em;font-weight:500}
 .quiet-button.active{background:#e9eee7;border-color:#d7e2d5;color:#4b6d54}
 .batch-block .note{margin-top:6px}
+
+.border-color{width:100%;min-height:44px;padding:2px;cursor:pointer}

@@ -23,7 +23,7 @@ describe('Geometric placement judge', () => {
   })
   it('still fills every copy and respects clearance when packing', async () => {
     const sheet: Sheet = { width: 100, height: 80, unit: 'mm', marginTop: 0, marginRight: 0, marginBottom: 0, marginLeft: 0, clearance: 4 }
-    const d: Design = { id: 'a', name: 'a.png', path: 'a.png', url: '', mime: 'image/png', imageWidth: 1, imageHeight: 1, width: 20, height: 20, quantity: 8, shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected: false }
+    const d: Design = { id: 'a', name: 'a.png', path: 'a.png', url: '', mime: 'image/png', imageWidth: 1, imageHeight: 1, width: 20, height: 20, quantity: 8, shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected: false, borderMm: 0, borderColor: '#000000' }
     const result = await pack([d], sheet)
     expect(result.sheets.flat()).toHaveLength(8)
     expect(result.unplaced).toHaveLength(0)

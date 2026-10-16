@@ -19,6 +19,7 @@ export interface BatchPanelProps {
   onCommit: () => void
   onApplyImage: (scope: Scope) => void
   onApplyQr: (scope: Scope) => void
+  onApplyBorder: (scope: Scope, mm: number, color: string) => void
   onResetOverrides: (scope: Scope) => void
   onRemoveAllQr: () => void
 }
@@ -35,12 +36,14 @@ function saveText(name: string, text: string, mime: string) {
 }
 
 export default function BatchPanel(p: BatchPanelProps) {
-  const { designs, selectedCount, img, setImg, qr, setQr, bridge, setBridge, csv, onStage, onCommit, onApplyImage, onApplyQr, onResetOverrides, onRemoveAllQr } = p
+  const { designs, selectedCount, img, setImg, qr, setQr, bridge, setBridge, csv, onStage, onCommit, onApplyImage, onApplyQr, onApplyBorder, onResetOverrides, onRemoveAllQr } = p
   const [scope, setScope] = useState<Scope>(selectedCount ? 'selected' : 'all')
 
   const imgOver = countImageOverrides(designs, img)
   const qrOver = countQrOverrides(designs, qr)
   const withQr = designs.filter(d => d.qr?.enabled).length
+  const [borderMm, setBorderMm] = useState('0')
+  const [borderColor, setBorderColor] = useState('#000000')
   const num = (v: string): number | null => (v === '' ? null : Number(v))
   const previewRows = csv ? csv.report.matches.filter(m => m.status !== 'matched' || m.errors.length).concat(csv.report.matches.filter(m => m.status === 'matched' && !m.errors.length)).slice(0, 50) : []
 
@@ -50,6 +53,19 @@ export default function BatchPanel(p: BatchPanelProps) {
       <span className="scope-label">APPLY TO</span>
       <button type="button" className={scope === 'selected' ? 'active' : ''} onClick={() => setScope('selected')} disabled={!selectedCount}>Selected · {selectedCount}</button>
       <button type="button" className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>All · {designs.length}</button>
+    </div>
+
+    <div className="batch-block">
+      <div className="export-heading"><div><span className="eyebrow">PRINT BORDER</span><h3>Border outside artwork</h3></div></div>
+      <div className="prod-inputs">
+        <label>Thickness mm<input type="number" inputMode="decimal" min="0" max="50" step="0.1" value={borderMm} onChange={e => setBorderMm(e.target.value)}/></label>
+        <label>Colour<input type="color" className="border-color" value={borderColor} onChange={e => setBorderColor(e.target.value)}/></label>
+      </div>
+      <div className="bulk-match">
+        <button type="button" disabled={!selectedCount} onClick={() => onApplyBorder('selected', Number(borderMm), borderColor)}>Apply to selected</button>
+        <button type="button" onClick={() => onApplyBorder('all', Number(borderMm), borderColor)}>Apply to all</button>
+      </div>
+      <small className="note">0 removes the border. The border adds to the piece size and is printed in the colour above; it is never a cut line.</small>
     </div>
 
     <div className="batch-block">

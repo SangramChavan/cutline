@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { pack, pathPoints, polygonsOverlap, validatePolygon, type Design, type Sheet } from './model'
 
 const sheet:Sheet={width:100,height:80,unit:'mm',marginTop:0,marginRight:0,marginBottom:0,marginLeft:0,clearance:0}
-function design(overrides:Partial<Design>={}):Design{return{id:'a',name:'tag.png',path:'tag.png',url:'',mime:'image/png',imageWidth:300,imageHeight:300,width:20,height:20,quantity:1,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,...overrides}}
+function design(overrides:Partial<Design>={}):Design{return{id:'a',name:'tag.png',path:'tag.png',url:'',mime:'image/png',imageWidth:300,imageHeight:300,width:20,height:20,quantity:1,shape:'rectangle',radius:0,rotation:0,enabled:true,selected:false,borderMm:0,borderColor:'#000000',...overrides}}
 
 describe('production nesting acceptance',()=>{
   it('packs square quantities exactly at configured physical size',async()=>{

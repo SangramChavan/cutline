@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Design, QrConfig } from './model'
 import {
-  QR_MARGIN_MM, applyImageSettings, applyImageToTargets, applyQrSettings, applyQrToTargets,
+  QR_MARGIN_MM, applyBorderToTargets, sanitizeBorder, applyImageSettings, applyImageToTargets, applyQrSettings, applyQrToTargets,
   countImageOverrides, countQrOverrides, emptyImageSettings, emptyQrSettings,
   imageHasOverride, qrHasOverride, type GlobalImageSettings, type GlobalQrSettings,
 } from './settings'
@@ -10,7 +10,7 @@ function design(over: Partial<Design> = {}): Design {
   return {
     id: 'a1', name: 'art.png', path: 'a.png', url: '', mime: 'image/png',
     imageWidth: 200, imageHeight: 100, width: 40, height: 20, quantity: 1,
-    shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected: false, ...over,
+    shape: 'rectangle', radius: 0, rotation: 0, enabled: true, selected: false, borderMm: 0, borderColor: '#000000', ...over,
   }
 }
 
@@ -155,5 +155,19 @@ describe('override detection', () => {
     expect(qrHasOverride(design(), g)).toBe(true)
     expect(countQrOverrides([clean, modified], g)).toBe(1)
     expect(countQrOverrides([design()], emptyQrSettings())).toBe(0)
+  })
+})
+
+describe('border settings', () => {
+  it('sanitizes missing / bad values from old saves', () => {
+    expect(sanitizeBorder({})).toMatchObject({ borderMm: 0, borderColor: '#000000' })
+    expect(sanitizeBorder({ borderMm: 999, borderColor: 'red' })).toMatchObject({ borderMm: 50, borderColor: '#000000' })
+    expect(sanitizeBorder({ borderMm: -3, borderColor: '#AABBCC' })).toMatchObject({ borderMm: 0, borderColor: '#aabbcc' })
+    expect(sanitizeBorder({ borderMm: NaN as number }).borderMm).toBe(0)
+  })
+  it('applies to selected only and clamps', () => {
+    const out = applyBorderToTargets([design({ id: 'a' }), design({ id: 'b' })], new Set(['a']), 80, '#ff0000')
+    expect(out[0]).toMatchObject({ borderMm: 50, borderColor: '#ff0000' })
+    expect(out[1]!.borderMm).toBe(0)
   })
 })

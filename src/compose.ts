@@ -1,4 +1,4 @@
-import { pathPoints, type Design, type Piece } from './model'
+import { outerSize, pathPoints, type Design, type Piece } from './model'
 import { qrMatrix } from './qr'
 
 export function loadImage(url: string): Promise<HTMLImageElement> {
@@ -23,6 +23,17 @@ export async function drawComposition(ctx: CanvasRenderingContext2D, d: Design, 
   ctx.beginPath()
   contour.forEach((pt, i) => { const X = (pt.x - d.width / 2) * scale, Y = (pt.y - d.height / 2) * scale; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y) })
   ctx.closePath()
+  if (d.borderMm > 0) {
+    // Border band outside the artwork: fill + a stroke 2*border wide (outer edge
+    // = contour offset by border; round joins give radius + border on curves).
+    ctx.save()
+    ctx.fillStyle = ctx.strokeStyle = d.borderColor || '#000000'
+    ctx.lineWidth = 2 * d.borderMm * scale
+    ctx.lineJoin = d.shape === 'rectangle' || d.shape === 'square' || d.shape === 'polygon' ? 'miter' : 'round'
+    ctx.miterLimit = 10
+    ctx.fill(); ctx.stroke()
+    ctx.restore()
+  }
   ctx.clip()
   if (image && image.naturalWidth) {
     const fit = Math.min(d.width * scale / image.naturalWidth, d.height * scale / image.naturalHeight)
@@ -74,10 +85,11 @@ export async function renderPieceCanvas(d: Design, piece: Pick<Piece, 'width' | 
 // The finished artwork image on its own rectangle, unrotated, clipped to the
 // cut shape, transparency preserved where the source had it. For the batch ZIP.
 export async function renderFinalCanvas(d: Design, pxPerMm: number, maxDim = 8000): Promise<HTMLCanvasElement> {
-  let pw = Math.max(1, Math.round(d.width * pxPerMm)), ph = Math.max(1, Math.round(d.height * pxPerMm))
+  const o = outerSize(d)
+  let pw = Math.max(1, Math.round(o.w * pxPerMm)), ph = Math.max(1, Math.round(o.h * pxPerMm))
   const shrink = Math.max(pw / maxDim, ph / maxDim, 1)
   pw = Math.max(1, Math.round(pw / shrink)); ph = Math.max(1, Math.round(ph / shrink))
-  const scale = pw / d.width
+  const scale = pw / o.w
   const canvas = document.createElement('canvas')
   canvas.width = pw; canvas.height = ph
   const ctx = canvas.getContext('2d')!

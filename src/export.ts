@@ -1,5 +1,5 @@
 import { PDFDocument, rgb } from 'pdf-lib'
-import { holeSheetPolygon, localToSheet, piecePoints, pointsToPath, polygonArea, toMm, usableBounds, type Design, type Hole, type Layout, type Piece, type Sheet } from './model'
+import { holeSheetPolygon, localToSheet, piecePoints, pointsToPath, outerSize, polygonArea, toMm, usableBounds, type Design, type Hole, type Layout, type Piece, type Sheet } from './model'
 import { canvasToPng, drawComposition, renderPieceCanvas } from './compose'
 import { qrMatrix, qrSvgInner } from './qr'
 
@@ -112,7 +112,8 @@ export function buildSvg(designs: Design[], layout: Layout, sheet: Sheet, option
       // d.url is a session blob: URL, dead once the tab closes. Embed the real
       // bytes (data: URL) so the exported SVG is self-contained and reusable.
       const href = hrefs?.get(d.id) ?? d.url
-      return `<defs><clipPath id="${clip}"><path d="${esc(path)}"/></clipPath></defs><g clip-path="url(#${clip})"><image href="${esc(href)}" x="${p.x.toFixed(4)}" y="${p.y.toFixed(4)}" width="${p.width.toFixed(4)}" height="${p.height.toFixed(4)}" preserveAspectRatio="xMidYMid meet"/>${qrGroup(d, p)}</g>${marks ? `<text x="${p.x}" y="${p.y + 3}" font-size="2">${esc(p.id)}</text>` : ''}`
+      const b = outerSize(d).offset
+      return `<defs><clipPath id="${clip}"><path d="${esc(path)}"/></clipPath></defs><g clip-path="url(#${clip})">${b ? `<rect x="${p.x.toFixed(4)}" y="${p.y.toFixed(4)}" width="${p.width.toFixed(4)}" height="${p.height.toFixed(4)}" fill="${esc(d.borderColor)}"/>` : ''}<image href="${esc(href)}" x="${(p.x + b).toFixed(4)}" y="${(p.y + b).toFixed(4)}" width="${(p.width - 2 * b).toFixed(4)}" height="${(p.height - 2 * b).toFixed(4)}" preserveAspectRatio="xMidYMid meet"/>${qrGroup(d, p)}</g>${marks ? `<text x="${p.x}" y="${p.y + 3}" font-size="2">${esc(p.id)}</text>` : ''}`
     }).join('\n')
     const cuts = pieces.map(p => { const d = designs.find(v => v.id === p.designId)!; const holes = holesOf(d).map(h => `<path d="${esc(pointsToPath(holeSheetPolygon(h, p, d, 48)))}" data-kind="hole"/>`).join('\n'); return `<path d="${esc(piecePath(p, d))}" data-kind="outline"/>${holes}` }).join('\n')
     return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${mm(widthMm)}" height="${mm(heightMm)}" viewBox="0 0 ${widthMm} ${heightMm}"><title>Cutline sheet ${i + 1}</title><g id="print-artwork">${artwork}</g><g id="cut" fill="none" stroke="${cutColor}" stroke-width="${cutWidthMm}">${cuts}</g></svg>`
@@ -155,8 +156,8 @@ export function buildDxf(designs: Design[], layout: Layout, sheet: Sheet) {
 
 export function buildManifest(designs: Design[], layout: Layout) {
   const rows = [['filename', 'design_id', 'copy_number', 'shape', 'width_mm', 'height_mm', 'hole_count', 'qr', 'sheet_number', 'x_mm', 'y_mm', 'rotation_deg', 'placement_status']]
-  for (const pieces of layout.sheets) for (const p of pieces) { const d = designs.find(v => v.id === p.designId)!; rows.push([d.path, d.id, String(p.copy), d.shape, d.width.toFixed(4), d.height.toFixed(4), String(holesOf(d).length), d.qr?.enabled ? (d.qr.source === 'image' ? 'image' : 'generated') : '', String(p.sheet + 1), p.x.toFixed(4), p.y.toFixed(4), String(p.rotation), 'placed']) }
-  for (const p of layout.unplaced) { const d = designs.find(v => v.id === p.designId)!; rows.push([d.path, d.id, String(p.copy), d.shape, d.width.toFixed(4), d.height.toFixed(4), String(holesOf(d).length), d.qr?.enabled ? d.qr.source : '', '', '', '', '', 'unplaced']) }
+  for (const pieces of layout.sheets) for (const p of pieces) { const d = designs.find(v => v.id === p.designId)!; rows.push([d.path, d.id, String(p.copy), d.shape, outerSize(d).w.toFixed(4), outerSize(d).h.toFixed(4), String(holesOf(d).length), d.qr?.enabled ? (d.qr.source === 'image' ? 'image' : 'generated') : '', String(p.sheet + 1), p.x.toFixed(4), p.y.toFixed(4), String(p.rotation), 'placed']) }
+  for (const p of layout.unplaced) { const d = designs.find(v => v.id === p.designId)!; rows.push([d.path, d.id, String(p.copy), d.shape, outerSize(d).w.toFixed(4), outerSize(d).h.toFixed(4), String(holesOf(d).length), d.qr?.enabled ? d.qr.source : '', '', '', '', '', 'unplaced']) }
   return rows.map(row => row.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\r\n')
 }
 

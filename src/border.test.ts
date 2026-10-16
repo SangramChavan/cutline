@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDxf, buildManifest, cutContours } from './export'
+import { buildDxf, buildManifest, buildSvg, cutContours } from './export'
 import { clampBorder, cutPoints, holeClearance, holeError, holePreset, normalizeBorderColor, outerSize, pack, piecePoints, polygonArea, polygonsOverlap, usableBounds, type Design, type Sheet } from './model'
 import { summarize } from './production'
 
@@ -77,5 +77,16 @@ describe('centred border alignment', () => {
   it('fits more pieces than an outside border of the same thickness', async () => {
     const n = async (a: 'outside' | 'center') => (await pack([design({ borderMm: 6, borderAlign: a })], sheet, [0, 90])).sheets[0]!.length
     expect(await n('center')).toBeGreaterThan(await n('outside'))
+  })
+})
+
+describe('mirrored outline svg', () => {
+  it('wraps both layers in a left-right flip about the sheet width and is unchanged otherwise', () => {
+    const layout = { sheets: [[{ id: 'a-1', designId: 'a', copy: 1, x: 10, y: 10, width: 30, height: 30, rotation: 0, sheet: 0, path: '' }]], unplaced: [], utilization: [0.1] }
+    const normal = buildSvg([design()], layout, sheet)[0]!, flipped = buildSvg([design()], layout, sheet, { mirror: true })[0]!
+    expect(normal).not.toContain('scale(-1 1)')
+    expect(flipped).toContain('transform="translate(200 0) scale(-1 1)"')
+    expect(flipped.indexOf('id="print-artwork"')).toBeGreaterThan(flipped.indexOf('scale(-1 1)'))
+    expect(flipped.indexOf('id="cut"')).toBeGreaterThan(flipped.indexOf('scale(-1 1)'))
   })
 })

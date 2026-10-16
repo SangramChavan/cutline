@@ -113,7 +113,7 @@ function qrGroup(d: Design, piece: Piece): string {
 }
 
 export function buildSvg(designs: Design[], layout: Layout, sheet: Sheet, options: ExportOptions = {}) {
-  const { marks = false, cutColor = '#ff0000', cutWidthMm = 0.01, hrefs } = options
+  const { marks = false, cutColor = '#ff0000', cutWidthMm = 0.01, hrefs, mirror = false } = options
   const widthMm = toMm(sheet.width, sheet.unit), heightMm = toMm(sheet.height, sheet.unit)
   return layout.sheets.map((pieces, i) => {
     const artwork = pieces.map(p => {
@@ -127,7 +127,7 @@ export function buildSvg(designs: Design[], layout: Layout, sheet: Sheet, option
       return `<defs><clipPath id="${clip}"><path d="${esc(path)}"/></clipPath></defs><g clip-path="url(#${clip})">${b ? `<rect x="${p.x.toFixed(4)}" y="${p.y.toFixed(4)}" width="${p.width.toFixed(4)}" height="${p.height.toFixed(4)}" fill="${esc(d.borderColor)}"/>` : ''}<image href="${esc(href)}" x="${(p.x + b).toFixed(4)}" y="${(p.y + b).toFixed(4)}" width="${(p.width - 2 * b).toFixed(4)}" height="${(p.height - 2 * b).toFixed(4)}" preserveAspectRatio="xMidYMid meet"/>${qrGroup(d, p)}</g>${marks ? `<text x="${p.x}" y="${p.y + 3}" font-size="2">${esc(p.id)}</text>` : ''}`
     }).join('\n')
     const cuts = pieces.map(p => { const d = designs.find(v => v.id === p.designId)!; const holes = holesOf(d).map(h => `<path d="${esc(pointsToPath(holeSheetPolygon(h, p, d, 48)))}" data-kind="hole"/>`).join('\n'); return `<path d="${esc(piecePath(p, d))}" data-kind="outline"/>${holes}` }).join('\n')
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${mm(widthMm)}" height="${mm(heightMm)}" viewBox="0 0 ${widthMm} ${heightMm}"><title>Cutline sheet ${i + 1}</title><g id="print-artwork">${artwork}</g><g id="cut" fill="none" stroke="${cutColor}" stroke-width="${cutWidthMm}">${cuts}</g></svg>`
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${mm(widthMm)}" height="${mm(heightMm)}" viewBox="0 0 ${widthMm} ${heightMm}"><title>Cutline sheet ${i + 1}${mirror ? ' (mirrored)' : ''}</title><g${mirror ? ` id="mirrored" transform="translate(${widthMm} 0) scale(-1 1)"` : ''}><g id="print-artwork">${artwork}</g><g id="cut" fill="none" stroke="${cutColor}" stroke-width="${cutWidthMm}">${cuts}</g></g></svg>`
   })
 }
 

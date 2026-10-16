@@ -29,7 +29,7 @@ export async function drawComposition(ctx: CanvasRenderingContext2D, d: Design, 
     ctx.save()
     ctx.fillStyle = ctx.strokeStyle = d.borderColor || '#000000'
     ctx.lineWidth = 2 * d.borderMm * scale
-    ctx.lineJoin = d.shape === 'rectangle' || d.shape === 'square' || d.shape === 'polygon' ? 'miter' : 'round'
+    ctx.lineJoin = d.shape === 'rectangle' || d.shape === 'square' || d.shape === 'polygon' || d.shape === 'svg' ? 'miter' : 'round'
     ctx.miterLimit = 10
     ctx.fill(); ctx.stroke()
     ctx.restore()

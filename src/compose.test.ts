@@ -13,6 +13,12 @@ describe('border rendering', () => {
     expect(calls).toContain('lineJoin=round')
     expect(calls.indexOf('stroke')).toBeLessThan(calls.indexOf('clip'))
   })
+  it('uses mitered joins for svg shapes so the band meets the mitered cut outline', async () => {
+    const calls: string[] = []
+    const ctx: any = new Proxy({}, { get: (_, k: string) => () => void calls.push(`${k}`), set: (_, k: string, v) => { calls.push(`${k}=${v}`); return true } })
+    await drawComposition(ctx, { id: 'a', name: 'a', path: 'a', url: '', mime: 'image/svg+xml', imageWidth: 1, imageHeight: 1, width: 20, height: 20, quantity: 1, shape: 'svg', svgPath: 'M 0 0 L 20 0 L 10 20 Z', radius: 0, rotation: 0, enabled: true, selected: false, borderMm: 2, borderColor: '#ff0000' }, { scale: 10, rotation: 0, image: null })
+    expect(calls).toContain('lineJoin=miter')
+  })
   it('draws nothing extra when border is 0', async () => {
     const calls: string[] = []
     const ctx: any = new Proxy({}, { get: (_, k: string) => () => void calls.push(`${k}`), set: () => true })
